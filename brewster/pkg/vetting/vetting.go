@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -358,6 +360,117 @@ func checkTapFormulas(result *VetResult, tapName string, cfg VetConfig) {
 			}
 		}
 	}
+
+	// Deep scan formula files if verbose mode
+	if cfg.Verbose {
+		scanTapFormulaFiles(result, tapName, formulas)
+	}
+}
+
+// scanTapFormulaFiles scans formula files in a tap for suspicious patterns
+func scanTapFormulaFiles(result *VetResult, tapName string, formulas []string) {
+	prefix, err := brew.GetBrewPrefix()
+	if err != nil {
+		return
+	}
+
+	parts := strings.Split(tapName, "/")
+	if len(parts) != 2 {
+		return
+	}
+
+	tapPath := filepath.Join(prefix, "Homebrew", "Library", "Taps", parts[0], "homebrew-"+parts[1])
+
+	// Check for Formula directory
+	formulaDir := filepath.Join(tapPath, "Formula")
+	if _, err := os.Stat(formulaDir); os.IsNotExist(err) {
+		// Try Formulas (plural)
+		formulaDir = filepath.Join(tapPath, "Formulas")
+		if _, err := os.Stat(formulaDir); os.IsNotExist(err) {
+			return
+		}
+	}
+
+	// Scan each formula file
+	for _, formula := range formulas {
+		formulaBase := strings.TrimPrefix(formula, tapName+"/")
+		formulaFile := filepath.Join(formulaDir, formulaBase+".rb")
+
+		findings := ScanFormulaFile(formulaFile, formula)
+		result.Findings = append(result.Findings, findings...)
+	}
+}
+
+// DeepScanInstalledFormulas performs a deep scan of all installed formula files
+func DeepScanInstalledFormulas(cfg VetConfig) ([]audit.Finding, error) {
+	var allFindings []audit.Finding
+
+	prefix, err := brew.GetBrewPrefix()
+	if err != nil {
+		return nil, fmt.Errorf("could not get brew prefix: %w", err)
+	}
+
+	// Scan core formulas
+	coreFormulasDir := filepath.Join(prefix, "Homebrew", "Library", "Taps", "homebrew", "homebrew-core", "Formula")
+	if _, err := os.Stat(coreFormulasDir); err == nil {
+		findings := scanFormulaDirectory(coreFormulasDir, "homebrew/core", cfg)
+		allFindings = append(allFindings, findings...)
+	}
+
+	// Scan installed taps
+	taps, err := brew.GetInstalledTaps()
+	if err != nil {
+		return allFindings, nil // Continue with what we have
+	}
+
+	for _, tap := range taps {
+		if tap.Official {
+			continue // Skip official taps, focus on third-party
+		}
+
+		parts := strings.Split(tap.Name, "/")
+		if len(parts) != 2 {
+			continue
+		}
+
+		tapPath := filepath.Join(prefix, "Homebrew", "Library", "Taps", parts[0], "homebrew-"+parts[1])
+		formulaDir := filepath.Join(tapPath, "Formula")
+		if _, err := os.Stat(formulaDir); os.IsNotExist(err) {
+			formulaDir = filepath.Join(tapPath, "Formulas")
+		}
+
+		findings := scanFormulaDirectory(formulaDir, tap.Name, cfg)
+		allFindings = append(allFindings, findings...)
+	}
+
+	return allFindings, nil
+}
+
+func scanFormulaDirectory(dir, tapName string, cfg VetConfig) []audit.Finding {
+	var findings []audit.Finding
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return findings
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".rb") {
+			continue
+		}
+
+		formulaPath := filepath.Join(dir, entry.Name())
+		formulaName := tapName + "/" + strings.TrimSuffix(entry.Name(), ".rb")
+
+		if cfg.Verbose {
+			fmt.Printf("    Scanning %s...\n", formulaName)
+		}
+
+		fileFindings := ScanFormulaFile(formulaPath, formulaName)
+		findings = append(findings, fileFindings...)
+	}
+
+	return findings
 }
 
 func checkUpstreamRepo(result *VetResult, owner, repo, pkgName string) {
@@ -535,4 +648,268 @@ var SuspiciousPatterns = []struct {
 	{regexp.MustCompile(`rm\s+-rf\s+/`), "Dangerous recursive delete", audit.SeverityCritical},
 	{regexp.MustCompile(`chmod\s+777`), "World-writable permissions", audit.SeverityMedium},
 	{regexp.MustCompile(`sudo\s+`), "Use of sudo", audit.SeverityMedium},
+	{regexp.MustCompile(`base64\s+-d`), "Base64 decoding (obfuscation)", audit.SeverityMedium},
+	{regexp.MustCompile(`\\x[0-9a-fA-F]{2}`), "Hex-encoded strings (obfuscation)", audit.SeverityMedium},
+	{regexp.MustCompile(`nc\s+-[el]`), "Netcat listener (backdoor)", audit.SeverityCritical},
+	{regexp.MustCompile(`/dev/tcp/`), "Bash TCP socket (backdoor)", audit.SeverityCritical},
+	{regexp.MustCompile(`mkfifo.*nc`), "Named pipe with netcat (reverse shell)", audit.SeverityCritical},
+	{regexp.MustCompile(`\$\(.*curl.*\)`), "Command substitution with curl", audit.SeverityHigh},
+	{regexp.MustCompile(`ENV\[["'].*KEY.*["']\]`), "Accessing environment keys", audit.SeverityLow},
+	{regexp.MustCompile(`system\s*\(`), "Direct system call", audit.SeverityMedium},
+}
+
+// ScanFormulaContent scans formula file content for suspicious patterns
+func ScanFormulaContent(content, formulaName string) []audit.Finding {
+	var findings []audit.Finding
+
+	for _, sp := range SuspiciousPatterns {
+		if matches := sp.Pattern.FindAllString(content, -1); len(matches) > 0 {
+			findings = append(findings, audit.Finding{
+				Package:     formulaName,
+				Type:        "SUSPICIOUS_CODE",
+				Severity:    sp.Severity,
+				Title:       fmt.Sprintf("Suspicious pattern: %s", sp.Description),
+				Description: fmt.Sprintf("Found %d occurrence(s) of suspicious pattern", len(matches)),
+				Remediation: "Review the formula source code carefully before installing",
+			})
+		}
+	}
+
+	return findings
+}
+
+// ScanFormulaFile reads and scans a formula file for suspicious patterns
+func ScanFormulaFile(formulaPath, formulaName string) []audit.Finding {
+	content, err := os.ReadFile(formulaPath)
+	if err != nil {
+		return nil
+	}
+	return ScanFormulaContent(string(content), formulaName)
+}
+
+// CaskSuspiciousPatterns - patterns to check in cask files
+// Casks have different risks since they download .app/.pkg/.dmg files
+var CaskSuspiciousPatterns = []struct {
+	Pattern     *regexp.Regexp
+	Description string
+	Severity    audit.Severity
+}{
+	// Download source risks
+	{regexp.MustCompile(`url\s+["']http://`), "Downloads over insecure HTTP", audit.SeverityHigh},
+	{regexp.MustCompile(`url\s+["'].*\.(ru|cn|tk|ml|ga|cf)/`), "Download from high-risk TLD", audit.SeverityHigh},
+	{regexp.MustCompile(`url\s+["'].*dropbox\.com`), "Downloads from Dropbox (no verification)", audit.SeverityMedium},
+	{regexp.MustCompile(`url\s+["'].*drive\.google\.com`), "Downloads from Google Drive (no verification)", audit.SeverityMedium},
+	{regexp.MustCompile(`url\s+["'].*mega\.nz`), "Downloads from Mega (common malware host)", audit.SeverityHigh},
+
+	// Checksum risks
+	{regexp.MustCompile(`sha256\s+:no_check`), "No SHA256 checksum verification", audit.SeverityCritical},
+
+	// Installer risks
+	{regexp.MustCompile(`pkg\s+["'].*\.pkg["']`), "Installs system package (elevated privileges)", audit.SeverityMedium},
+	{regexp.MustCompile(`installer\s+script:`), "Uses custom installer script", audit.SeverityHigh},
+	{regexp.MustCompile(`preflight\s+do`), "Has preflight script (runs before install)", audit.SeverityMedium},
+	{regexp.MustCompile(`postflight\s+do`), "Has postflight script (runs after install)", audit.SeverityMedium},
+	{regexp.MustCompile(`uninstall\s+script:`), "Custom uninstall script", audit.SeverityMedium},
+
+	// Permission risks
+	{regexp.MustCompile(`accessibility`), "Requests accessibility permissions", audit.SeverityMedium},
+	{regexp.MustCompile(`input_monitoring`), "Requests input monitoring (keylogger risk)", audit.SeverityHigh},
+	{regexp.MustCompile(`screen_recording`), "Requests screen recording", audit.SeverityMedium},
+	{regexp.MustCompile(`full_disk_access`), "Requests full disk access", audit.SeverityHigh},
+
+	// Suspicious behaviors
+	{regexp.MustCompile(`launchctl\s+load`), "Loads launch daemon/agent (persistence)", audit.SeverityMedium},
+	{regexp.MustCompile(`kextload`), "Loads kernel extension", audit.SeverityHigh},
+	{regexp.MustCompile(`/System/`), "Modifies system directories", audit.SeverityHigh},
+	{regexp.MustCompile(`/Library/LaunchDaemons`), "Installs system-wide daemon", audit.SeverityMedium},
+}
+
+// ScanCaskContent scans cask file content for suspicious patterns
+func ScanCaskContent(content, caskName string) []audit.Finding {
+	var findings []audit.Finding
+
+	for _, sp := range CaskSuspiciousPatterns {
+		if matches := sp.Pattern.FindAllString(content, -1); len(matches) > 0 {
+			findings = append(findings, audit.Finding{
+				Package:     caskName,
+				Type:        audit.FindingSuspiciousCode,
+				Severity:    sp.Severity,
+				Title:       fmt.Sprintf("Cask risk: %s", sp.Description),
+				Description: fmt.Sprintf("Found %d occurrence(s)", len(matches)),
+				Remediation: "Review the cask source and verify the download URL is legitimate",
+			})
+		}
+	}
+
+	return findings
+}
+
+// ScanCaskFile reads and scans a cask file for suspicious patterns
+func ScanCaskFile(caskPath, caskName string) []audit.Finding {
+	content, err := os.ReadFile(caskPath)
+	if err != nil {
+		return nil
+	}
+	return ScanCaskContent(string(content), caskName)
+}
+
+// DeepScanInstalledCasks performs a deep scan of all installed cask files
+func DeepScanInstalledCasks(cfg VetConfig) ([]audit.Finding, error) {
+	var allFindings []audit.Finding
+
+	prefix, err := brew.GetBrewPrefix()
+	if err != nil {
+		return nil, fmt.Errorf("could not get brew prefix: %w", err)
+	}
+
+	// Scan homebrew/cask (official casks)
+	caskDir := filepath.Join(prefix, "Homebrew", "Library", "Taps", "homebrew", "homebrew-cask", "Casks")
+	if _, err := os.Stat(caskDir); err == nil {
+		findings := scanCaskDirectory(caskDir, "homebrew/cask", cfg)
+		allFindings = append(allFindings, findings...)
+	}
+
+	// Scan third-party taps for casks
+	taps, err := brew.GetInstalledTaps()
+	if err != nil {
+		return allFindings, nil
+	}
+
+	for _, tap := range taps {
+		if tap.Official && tap.Name != "homebrew/cask" {
+			continue
+		}
+
+		parts := strings.Split(tap.Name, "/")
+		if len(parts) != 2 {
+			continue
+		}
+
+		tapPath := filepath.Join(prefix, "Homebrew", "Library", "Taps", parts[0], "homebrew-"+parts[1])
+		caskDir := filepath.Join(tapPath, "Casks")
+		if _, err := os.Stat(caskDir); os.IsNotExist(err) {
+			continue
+		}
+
+		findings := scanCaskDirectory(caskDir, tap.Name, cfg)
+		allFindings = append(allFindings, findings...)
+	}
+
+	return allFindings, nil
+}
+
+func scanCaskDirectory(dir, tapName string, cfg VetConfig) []audit.Finding {
+	var findings []audit.Finding
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return findings
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".rb") {
+			continue
+		}
+
+		caskPath := filepath.Join(dir, entry.Name())
+		caskName := tapName + "/" + strings.TrimSuffix(entry.Name(), ".rb")
+
+		if cfg.Verbose {
+			fmt.Printf("    Scanning cask %s...\n", caskName)
+		}
+
+		fileFindings := ScanCaskFile(caskPath, caskName)
+		findings = append(findings, fileFindings...)
+	}
+
+	return findings
+}
+
+// VetCask vets an individual cask
+func VetCask(caskToken string, cfg VetConfig) (*VetResult, error) {
+	result := &VetResult{
+		Target:     caskToken,
+		TargetType: "cask",
+		Timestamp:  time.Now(),
+		Findings:   []audit.Finding{},
+	}
+
+	if cfg.Verbose {
+		fmt.Printf("  Analyzing cask: %s\n", caskToken)
+	}
+
+	// Get cask info
+	cask, err := brew.GetCaskInfo(caskToken)
+	if err != nil {
+		return nil, fmt.Errorf("could not get cask info: %w", err)
+	}
+
+	// Check for deprecation
+	if cask.Deprecated {
+		result.Findings = append(result.Findings, audit.Finding{
+			Package:     caskToken,
+			Type:        audit.FindingDeprecated,
+			Severity:    audit.SeverityMedium,
+			Title:       "Cask is deprecated",
+			Description: "This cask has been deprecated",
+			Remediation: "Find an alternative application",
+		})
+	}
+
+	if cask.Disabled {
+		result.Findings = append(result.Findings, audit.Finding{
+			Package:     caskToken,
+			Type:        audit.FindingDeprecated,
+			Severity:    audit.SeverityHigh,
+			Title:       "Cask is disabled",
+			Description: "This cask has been disabled and should not be used",
+			Remediation: "Find an alternative application",
+		})
+	}
+
+	// Check URL security
+	if brew.IsHTTPURL(cask.URL) {
+		result.Findings = append(result.Findings, audit.Finding{
+			Package:     caskToken,
+			Type:        audit.FindingHTTP,
+			Severity:    audit.SeverityHigh,
+			Title:       "Cask uses insecure HTTP download",
+			Description: "Application downloads over unencrypted HTTP can be tampered with",
+			URL:         cask.URL,
+			Remediation: "High risk - downloads can be man-in-the-middled",
+		})
+	}
+
+	// Check for missing checksum
+	if cask.Sha256 == "" || cask.Sha256 == "no_check" {
+		result.Findings = append(result.Findings, audit.Finding{
+			Package:     caskToken,
+			Type:        audit.FindingNoChecksum,
+			Severity:    audit.SeverityCritical,
+			Title:       "No checksum verification",
+			Description: "Downloaded application is not verified with SHA256",
+			Remediation: "Cannot verify download integrity - high malware risk",
+		})
+	}
+
+	// Check if it's from a third-party tap
+	if cask.Tap != "" && !strings.HasPrefix(cask.Tap, "homebrew/") {
+		result.Findings = append(result.Findings, audit.Finding{
+			Package:     caskToken,
+			Type:        audit.FindingUntrustedTap,
+			Severity:    audit.SeverityMedium,
+			Title:       "Cask from third-party tap",
+			Description: fmt.Sprintf("This cask is from %s, not an official Homebrew tap", cask.Tap),
+			Remediation: "Verify you trust the tap maintainer",
+		})
+	}
+
+	// Check homepage for GitHub and analyze if present
+	owner, repo, ok := brew.ExtractGitHubRepo(cask.Homepage)
+	if ok {
+		checkUpstreamRepo(result, owner, repo, caskToken)
+	}
+
+	calculateRisk(result)
+	return result, nil
 }

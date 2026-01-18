@@ -36,6 +36,9 @@ Detect bad distributors, abandoned projects, supply chain risks, and more.`,
 	rootCmd.AddCommand(vetCmd())
 	rootCmd.AddCommand(monitorCmd())
 	rootCmd.AddCommand(scanCmd())
+	rootCmd.AddCommand(deepScanCmd())
+	rootCmd.AddCommand(caskScanCmd())
+	rootCmd.AddCommand(vetCaskCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -190,6 +193,103 @@ func scanCmd() *cobra.Command {
 
 			fmt.Println("\n========================================")
 			return report.Output(combined, outputFmt)
+		},
+	}
+}
+
+// deepScanCmd - deep scan formula files for suspicious patterns
+func deepScanCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "deep-scan",
+		Short: "Deep scan formula files for suspicious code patterns",
+		Long: `Scan Homebrew formula source files for potentially malicious patterns.
+
+This scans the actual Ruby formula files for:
+- Piped curl/wget to shell (curl | sh)
+- Eval usage and obfuscation techniques
+- Base64/hex-encoded payloads
+- Backdoor patterns (netcat listeners, /dev/tcp)
+- Dangerous file operations (rm -rf /)
+- Direct system calls`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			fmt.Println("🔬 Brewster Deep Scan - Formula Code Analysis")
+			fmt.Println("=============================================")
+
+			findings, err := vetting.DeepScanInstalledFormulas(vetting.VetConfig{Verbose: verbose})
+			if err != nil {
+				return fmt.Errorf("deep scan failed: %w", err)
+			}
+
+			if len(findings) == 0 {
+				fmt.Println("\n✅ No suspicious patterns detected in formula files")
+				return nil
+			}
+
+			fmt.Printf("\n⚠️  Found %d suspicious patterns\n\n", len(findings))
+			return report.Output(findings, outputFmt)
+		},
+	}
+}
+
+// caskScanCmd - deep scan cask files for suspicious patterns
+func caskScanCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "cask-scan",
+		Short: "Deep scan cask files for suspicious patterns",
+		Long: `Scan Homebrew cask files for potentially risky behaviors.
+
+This scans cask definition files for:
+- Insecure HTTP downloads
+- Downloads from high-risk sources (Dropbox, Google Drive, Mega)
+- Missing SHA256 checksums
+- Custom installer/uninstaller scripts
+- Pre/post-flight scripts
+- Dangerous permission requests (input monitoring, full disk access)
+- Launch daemon installation
+- Kernel extension loading`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			fmt.Println("🍺 Brewster Cask Scan - Application Risk Analysis")
+			fmt.Println("================================================")
+
+			findings, err := vetting.DeepScanInstalledCasks(vetting.VetConfig{Verbose: verbose})
+			if err != nil {
+				return fmt.Errorf("cask scan failed: %w", err)
+			}
+
+			if len(findings) == 0 {
+				fmt.Println("\n✅ No suspicious patterns detected in cask files")
+				return nil
+			}
+
+			fmt.Printf("\n⚠️  Found %d risk indicators\n\n", len(findings))
+			return report.Output(findings, outputFmt)
+		},
+	}
+}
+
+// vetCaskCmd - vet a specific cask before installing
+func vetCaskCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "vet-cask [cask]",
+		Short: "Vet a cask before installing",
+		Long: `Analyze a cask for security risks before installation.
+
+Examples:
+  brewster vet-cask google-chrome
+  brewster vet-cask --cask vlc`,
+		Args: cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			fmt.Printf("🔍 Vetting cask: %s\n", args[0])
+			fmt.Println("========================")
+
+			result, err := vetting.VetCask(args[0], vetting.VetConfig{
+				Verbose: verbose,
+			})
+			if err != nil {
+				return fmt.Errorf("cask vetting failed: %w", err)
+			}
+
+			return report.Output(result, outputFmt)
 		},
 	}
 }

@@ -27,13 +27,14 @@ const (
 type FindingType string
 
 const (
-	FindingCVE          FindingType = "CVE"
-	FindingAbandoned    FindingType = "ABANDONED"
-	FindingHTTP         FindingType = "INSECURE_HTTP"
-	FindingDeprecated   FindingType = "DEPRECATED"
-	FindingNoChecksum   FindingType = "NO_CHECKSUM"
-	FindingUntrustedTap FindingType = "UNTRUSTED_TAP"
-	FindingDeadURL      FindingType = "DEAD_URL"
+	FindingCVE            FindingType = "CVE"
+	FindingAbandoned      FindingType = "ABANDONED"
+	FindingHTTP           FindingType = "INSECURE_HTTP"
+	FindingDeprecated     FindingType = "DEPRECATED"
+	FindingNoChecksum     FindingType = "NO_CHECKSUM"
+	FindingUntrustedTap   FindingType = "UNTRUSTED_TAP"
+	FindingDeadURL        FindingType = "DEAD_URL"
+	FindingSuspiciousCode FindingType = "SUSPICIOUS_CODE"
 )
 
 // Finding represents a security finding

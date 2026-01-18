@@ -70,3 +70,6 @@ local.config
 *.pkg
 *.dmg
 sekretsauce
+
+# Go binaries
+brewster/brewster

@@ -47,6 +47,35 @@ type InstalledPackage struct {
 	BuildDependencies []string `json:"build_dependencies"`
 }
 
+// Cask represents a Homebrew cask (macOS application)
+type Cask struct {
+	Token       string   `json:"token"`
+	FullToken   string   `json:"full_token"`
+	Tap         string   `json:"tap"`
+	Name        []string `json:"name"`
+	Version     string   `json:"version"`
+	Homepage    string   `json:"homepage"`
+	URL         string   `json:"url"`
+	Sha256      string   `json:"sha256"`
+	Artifacts   []string `json:"-"`
+	Deprecated  bool     `json:"deprecated"`
+	Disabled    bool     `json:"disabled"`
+}
+
+// InstalledCask represents an installed cask
+type InstalledCask struct {
+	Token          string   `json:"token"`
+	FullToken      string   `json:"full_token"`
+	Tap            string   `json:"tap"`
+	Name           []string `json:"name"`
+	Version        string   `json:"version"`
+	InstalledVersion string `json:"installed_version"`
+	Homepage       string   `json:"homepage"`
+	URL            string   `json:"url"`
+	Sha256         string   `json:"sha256"`
+	Outdated       bool     `json:"outdated"`
+}
+
 // GetBrewPrefix returns the Homebrew prefix
 func GetBrewPrefix() (string, error) {
 	out, err := exec.Command("brew", "--prefix").Output()
@@ -206,6 +235,96 @@ func GetFormulaInfo(name string) (*Formula, error) {
 		Disabled:          f.Disabled,
 		DeprecationDate:   f.DeprecationDate,
 		DeprecationReason: f.DeprecationReason,
+	}, nil
+}
+
+// GetInstalledCasks returns all installed casks
+func GetInstalledCasks() ([]InstalledCask, error) {
+	out, err := exec.Command("brew", "info", "--json=v2", "--cask", "--installed").Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get installed casks: %w", err)
+	}
+
+	var result struct {
+		Casks []struct {
+			Token     string   `json:"token"`
+			FullToken string   `json:"full_token"`
+			Tap       string   `json:"tap"`
+			Name      []string `json:"name"`
+			Homepage  string   `json:"homepage"`
+			URL       string   `json:"url"`
+			Sha256    string   `json:"sha256"`
+			Version   string   `json:"version"`
+			Installed string   `json:"installed"`
+			Outdated  bool     `json:"outdated"`
+		} `json:"casks"`
+	}
+
+	if err := json.Unmarshal(out, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse cask info: %w", err)
+	}
+
+	var casks []InstalledCask
+	for _, c := range result.Casks {
+		casks = append(casks, InstalledCask{
+			Token:            c.Token,
+			FullToken:        c.FullToken,
+			Tap:              c.Tap,
+			Name:             c.Name,
+			Version:          c.Version,
+			InstalledVersion: c.Installed,
+			Homepage:         c.Homepage,
+			URL:              c.URL,
+			Sha256:           c.Sha256,
+			Outdated:         c.Outdated,
+		})
+	}
+
+	return casks, nil
+}
+
+// GetCaskInfo gets detailed info for a specific cask
+func GetCaskInfo(token string) (*Cask, error) {
+	out, err := exec.Command("brew", "info", "--json=v2", "--cask", token).Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get cask info: %w", err)
+	}
+
+	var result struct {
+		Casks []struct {
+			Token      string   `json:"token"`
+			FullToken  string   `json:"full_token"`
+			Tap        string   `json:"tap"`
+			Name       []string `json:"name"`
+			Homepage   string   `json:"homepage"`
+			URL        string   `json:"url"`
+			Sha256     string   `json:"sha256"`
+			Version    string   `json:"version"`
+			Deprecated bool     `json:"deprecated"`
+			Disabled   bool     `json:"disabled"`
+		} `json:"casks"`
+	}
+
+	if err := json.Unmarshal(out, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse cask info: %w", err)
+	}
+
+	if len(result.Casks) == 0 {
+		return nil, fmt.Errorf("cask not found: %s", token)
+	}
+
+	c := result.Casks[0]
+	return &Cask{
+		Token:      c.Token,
+		FullToken:  c.FullToken,
+		Tap:        c.Tap,
+		Name:       c.Name,
+		Version:    c.Version,
+		Homepage:   c.Homepage,
+		URL:        c.URL,
+		Sha256:     c.Sha256,
+		Deprecated: c.Deprecated,
+		Disabled:   c.Disabled,
 	}, nil
 }
 
