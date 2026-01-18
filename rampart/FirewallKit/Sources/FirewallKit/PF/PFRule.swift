@@ -7,7 +7,7 @@ public struct PFRule: Identifiable, Equatable {
     public let id: UUID
     public var action: Action
     public var direction: Direction
-    public var `protocol`: Protocol?
+    public var networkProtocol: NetworkProtocol?
     public var interface: String?
     public var source: Address
     public var destination: Address
@@ -20,7 +20,7 @@ public struct PFRule: Identifiable, Equatable {
         id: UUID = UUID(),
         action: Action,
         direction: Direction = .any,
-        protocol: Protocol? = nil,
+        networkProtocol: NetworkProtocol? = nil,
         interface: String? = nil,
         source: Address = .any,
         destination: Address = .any,
@@ -32,7 +32,7 @@ public struct PFRule: Identifiable, Equatable {
         self.id = id
         self.action = action
         self.direction = direction
-        self.protocol = `protocol`
+        self.networkProtocol = networkProtocol
         self.interface = interface
         self.source = source
         self.destination = destination
@@ -62,11 +62,11 @@ public struct PFRule: Identifiable, Equatable {
         )
     }
 
-    public static func allow(port: UInt16, protocol proto: Protocol = .tcp) -> PFRule {
+    public static func allow(port: UInt16, protocol proto: NetworkProtocol = .tcp) -> PFRule {
         PFRule(
             action: .pass,
             direction: .in,
-            protocol: proto,
+            networkProtocol: proto,
             port: .single(port),
             state: .keepState
         )
@@ -107,7 +107,7 @@ extension PFRule {
         }
     }
 
-    public enum `Protocol`: String, CaseIterable {
+    public enum NetworkProtocol: String, CaseIterable {
         case tcp
         case udp
         case icmp
@@ -212,7 +212,7 @@ extension PFRule {
         }
 
         // Protocol
-        if let proto = `protocol`, proto != .any {
+        if let proto = networkProtocol, proto != .any {
             parts.append("proto \(proto.rawValue)")
         }
 
@@ -243,7 +243,7 @@ extension PFRule {
     public var description: String {
         let actionEmoji = action == .block ? "🚫" : "✅"
         let dirArrow = direction == .in ? "←" : (direction == .out ? "→" : "↔")
-        let proto = `protocol`?.rawValue.uppercased() ?? "ANY"
+        let proto = networkProtocol?.rawValue.uppercased() ?? "ANY"
         let portStr = port?.displayName ?? "*"
 
         return "\(actionEmoji) \(dirArrow) \(proto) \(source.displayName) → \(destination.displayName):\(portStr)"
@@ -301,7 +301,7 @@ extension PFRule {
             } else if comp == "proto" {
                 index += 1
                 if index < components.count {
-                    rule.protocol = Protocol(rawValue: components[index])
+                    rule.networkProtocol = NetworkProtocol(rawValue: components[index])
                     index += 1
                 }
             } else if comp == "from" {

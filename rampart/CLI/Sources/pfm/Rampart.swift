@@ -3,6 +3,7 @@
 
 import ArgumentParser
 import FirewallKit
+import Foundation
 
 @main
 struct Rampart: ParsableCommand {

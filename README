@@ -1,17 +1,96 @@
-I think we did all this:
+# SeKretSauce
 
-- find a flag bad secrets
-- find and flag passweded files
-- file and flag crypto current wallets
-- Is it possible to search chrome and googles stores?
-- Use all that password data and see if they are flagged
-- Flag CA's that are installed on systems
-- Find and flag unsigned OSX files
-- Find and flag signed osx files
-- what else?
+macOS Security Suite - Finding and closing macOS security gaps.
 
-Then in this directory i made a directory called "brewster"
-We should likely make this a sub module
-This will audit home brew, find malicious packages, flag suspicious items
-Do these get signed?
+*"Blind guy makes software for Blind Spots" -RyCat*
 
+## Phase 1: Core Security Tools (In Progress)
+
+### Rampart - Unified Firewall Control
+**Status: Built**
+
+"One Place to Rule Them All" - GUI + CLI for managing:
+- pf (packet filter) - BSD-level network filtering
+- Application Firewall - Per-app network control
+- Network monitoring - Live connections and listeners
+
+Location: `rampart/`
+
+```bash
+cd rampart && ./build.sh
+```
+
+## Phase 2: Security Scanners (Planned)
+
+- [ ] Secret scanner - Find bad secrets in files
+- [ ] Password file detector - Find password-protected files
+- [ ] Crypto wallet finder - Detect cryptocurrency wallets
+- [ ] CA auditor - Audit installed certificate authorities
+- [ ] Unsigned binary detector - Find unsigned macOS files
+- [ ] Signed binary auditor - Audit signed macOS files
+- [ ] Browser extension scanner - Check for malicious extensions
+- [ ] Chrome/Google store search
+
+## Phase 2: Brewster (Planned)
+
+Homebrew security auditor:
+- Find malicious packages
+- Flag suspicious items
+- Package signature verification
+
+Location: `brewster/`
+
+## Phase 3: MalMonitor (Future)
+
+Behavioral malware detection:
+- Process monitoring
+- File system access patterns
+- Network behavior analysis
+- Persistence detection
+- TCC bypass detection
+
+## Architecture
+
+```
+SeKretSauce/
+├── rampart/          # Phase 1 - Unified Firewall (DONE)
+│   ├── FirewallKit/     - Core library
+│   ├── FirewallHelper/  - Privileged XPC helper
+│   ├── CLI/             - Command-line interface
+│   └── GUI/             - SwiftUI application
+│
+├── brewster/         # Phase 2 - Homebrew auditor
+├── pkg/              # Phase 2 - Go scanner modules
+│   ├── secrets/
+│   ├── wallet/
+│   ├── ca/
+│   ├── certs/
+│   ├── browser/
+│   ├── keychain/
+│   └── breach/
+│
+└── Sources/          # Phase 3 - Swift components
+    ├── EndpointSecurity/
+    ├── NetworkExtension/
+    └── TunnelDetection/
+```
+
+## Requirements
+
+- macOS 13.0+
+- Swift 5.9+
+- Go 1.21+ (for scanners)
+- Developer ID (for code signing)
+
+## Quick Start
+
+```bash
+# Build Rampart (Phase 1)
+cd rampart && ./build.sh
+
+# Install CLI
+sudo cp build/rampart /usr/local/bin/
+
+# Check firewall status
+rampart status
+```
