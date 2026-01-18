@@ -459,7 +459,7 @@ func isSimilar(a, b string) bool {
 
 	// Common substitutions
 	substitutions := map[string]string{
-		"0": "o", "1": "l", "1": "i", "3": "e", "4": "a", "5": "s",
+		"0": "o", "1": "l", "3": "e", "4": "a", "5": "s",
 	}
 	normalized := a
 	for from, to := range substitutions {

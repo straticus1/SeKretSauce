@@ -1,3 +1,5 @@
+I think we did all this:
+
 - find a flag bad secrets
 - find and flag passweded files
 - file and flag crypto current wallets
@@ -7,4 +9,9 @@
 - Find and flag unsigned OSX files
 - Find and flag signed osx files
 - what else?
+
+Then in this directory i made a directory called "brewster"
+We should likely make this a sub module
+This will audit home brew, find malicious packages, flag suspicious items
+Do these get signed?
 
