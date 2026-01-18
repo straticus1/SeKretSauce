@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Endpoint Security - requires Apple approval -->
+    <key>com.apple.developer.endpoint-security.client</key>
+    <true/>
+
+    <!-- System Extension - for Network Extension host -->
+    <key>com.apple.developer.system-extension.install</key>
+    <true/>
+
+    <!-- Network Extension capabilities -->
+    <key>com.apple.developer.networking.networkextension</key>
+    <array>
+        <string>dns-proxy</string>
+        <string>dns-proxy-systemextension</string>
+        <string>app-proxy-provider</string>
+        <string>app-proxy-provider-systemextension</string>
+        <string>content-filter-provider</string>
+        <string>content-filter-provider-systemextension</string>
+        <string>packet-tunnel-provider</string>
+        <string>packet-tunnel-provider-systemextension</string>
+    </array>
+
+    <!-- Keychain access -->
+    <key>keychain-access-groups</key>
+    <array>
+        <string>$(AppIdentifierPrefix)com.sekretsauce.agent</string>
+    </array>
+
+    <!-- Allow reading of arbitrary files (for monitoring) -->
+    <key>com.apple.security.files.all</key>
+    <true/>
+
+    <!-- Inter-process communication -->
+    <key>com.apple.security.temporary-exception.mach-lookup.global-name</key>
+    <array>
+        <string>com.sekretsauce.daemon</string>
+    </array>
+
+    <!-- Hardened runtime exceptions -->
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <false/>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <false/>
+</dict>
+</plist>

@@ -1,0 +1,20 @@
+I have an idea:
+
+sekretsauce --exporff --out-json -> firefox settings to json
+sekretsauce --exportgc --out-json -> chrome
+sekretsauce --export --out-json 
+secretsauce --scan
+
+Now we have the keys from certs:
+	1. check certificate transparency? 
+	2. --scan scans our password system
+- Auto flag accounts that are comprompised
+- Search OSX for hidden places processses go
+- Search ithing App files, bundles
+- Print useful output
+- CLI + GUI
+
+With a tool named like "Secret Sauce" with a play on spelling this
+can be a swiss army knife for network and security professional
+
+

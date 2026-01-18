@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+
+    <key>CFBundleExecutable</key>
+    <string>SeKretSauceNetworkExtension</string>
+
+    <key>CFBundleIdentifier</key>
+    <string>com.sekretsauce.networkextension</string>
+
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+
+    <key>CFBundleName</key>
+    <string>SeKretSauce Network Extension</string>
+
+    <key>CFBundlePackageType</key>
+    <string>XPC!</string>
+
+    <key>CFBundleShortVersionString</key>
+    <string>1.0.0</string>
+
+    <key>CFBundleVersion</key>
+    <string>1</string>
+
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+
+    <!-- Network Extension configuration -->
+    <key>NetworkExtension</key>
+    <dict>
+        <!-- DNS Proxy -->
+        <key>NEDNSProxyProviderBundleIdentifier</key>
+        <string>com.sekretsauce.networkextension.dnsproxy</string>
+
+        <!-- Transparent Proxy -->
+        <key>NETransparentProxyProviderBundleIdentifier</key>
+        <string>com.sekretsauce.networkextension.proxy</string>
+
+        <!-- Content Filter -->
+        <key>NEFilterDataProviderBundleIdentifier</key>
+        <string>com.sekretsauce.networkextension.filter</string>
+
+        <!-- Provider classes -->
+        <key>NEProviderClasses</key>
+        <dict>
+            <key>com.apple.networkextension.dns-proxy</key>
+            <string>$(PRODUCT_MODULE_NAME).DNSProxyProvider</string>
+            <key>com.apple.networkextension.transparent-proxy</key>
+            <string>$(PRODUCT_MODULE_NAME).TransparentProxyProvider</string>
+            <key>com.apple.networkextension.filter-data</key>
+            <string>$(PRODUCT_MODULE_NAME).ContentFilterDataProvider</string>
+            <key>com.apple.networkextension.filter-control</key>
+            <string>$(PRODUCT_MODULE_NAME).ContentFilterControlProvider</string>
+        </dict>
+    </dict>
+
+    <!-- System Extension -->
+    <key>NSSystemExtensionUsageDescription</key>
+    <string>SeKretSauce Network Extension monitors DNS and network traffic to detect tunneling and security threats.</string>
+</dict>
+</plist>

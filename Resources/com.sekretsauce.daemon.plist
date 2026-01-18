@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Identifier -->
+    <key>Label</key>
+    <string>com.sekretsauce.daemon</string>
+
+    <!-- Executable -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Library/Application Support/SeKretSauce/sekretsauced</string>
+    </array>
+
+    <!-- Run at boot -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Keep alive - restart if crashes -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+        <key>Crashed</key>
+        <true/>
+    </dict>
+
+    <!-- Throttle restarts -->
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <!-- Run as root -->
+    <key>UserName</key>
+    <string>root</string>
+    <key>GroupName</key>
+    <string>wheel</string>
+
+    <!-- Working directory -->
+    <key>WorkingDirectory</key>
+    <string>/Library/Application Support/SeKretSauce</string>
+
+    <!-- Logging -->
+    <key>StandardOutPath</key>
+    <string>/Library/Logs/SeKretSauce/daemon.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Library/Logs/SeKretSauce/daemon-error.log</string>
+
+    <!-- Environment -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <!-- Resource limits -->
+    <key>SoftResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>4096</integer>
+    </dict>
+    <key>HardResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>8192</integer>
+    </dict>
+
+    <!-- Process type -->
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <!-- Nice value (priority) -->
+    <key>Nice</key>
+    <integer>-5</integer>
+</dict>
+</plist>
