@@ -1,7 +1,7 @@
 # SeKretSauce Makefile
 # Security Swiss Army Knife for macOS
 
-.PHONY: all build install clean test gui release homebrew
+.PHONY: all build install clean test gui release homebrew swift-build installer
 
 VERSION := 1.0.0
 BUILD_DIR := build
@@ -123,6 +123,30 @@ scan-wallets: build
 scan-cas: build
 	@./$(CLI_NAME) scan cas
 
+# Swift security agent build
+swift-build:
+	@echo "Building Swift security agent..."
+	@swift build -c release
+	@echo "Swift build complete"
+
+# Build GUI installer
+installer: swift-build
+	@echo "Building GUI installer..."
+	@cd InstallerApp && ./build.sh
+	@echo "Installer build complete: dist/SeKretSauce Installer.app"
+
+# Install Swift daemon
+install-daemon: swift-build
+	@echo "Installing security agent daemon..."
+	@sudo ./Installer/install.sh
+	@echo "Daemon installed"
+
+# Uninstall Swift daemon
+uninstall-daemon:
+	@echo "Uninstalling security agent daemon..."
+	@sudo ./Installer/uninstall.sh
+	@echo "Daemon uninstalled"
+
 # Help
 help:
 	@echo "SeKretSauce - Security Swiss Army Knife"
@@ -136,6 +160,12 @@ help:
 	@echo "  make homebrew    - Generate Homebrew formula"
 	@echo "  make clean       - Remove build artifacts"
 	@echo "  make test        - Run tests"
+	@echo ""
+	@echo "Security Agent:"
+	@echo "  make swift-build     - Build Swift security agent"
+	@echo "  make installer       - Build GUI installer app"
+	@echo "  make install-daemon  - Install security agent daemon"
+	@echo "  make uninstall-daemon - Uninstall security agent daemon"
 	@echo ""
 	@echo "Scan shortcuts:"
 	@echo "  make scan            - Run full scan"
