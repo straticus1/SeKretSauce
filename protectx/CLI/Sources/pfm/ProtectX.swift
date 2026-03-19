@@ -1,4 +1,4 @@
-// Rampart CLI - "One Place to Rule Them All"
+// ADS ProtectX CLI - "One Place to Rule Them All"
 // Unified macOS firewall management
 
 import ArgumentParser
@@ -6,10 +6,10 @@ import FirewallKit
 import Foundation
 
 @main
-struct Rampart: ParsableCommand {
+struct ProtectX: ParsableCommand {
     static let configuration = CommandConfiguration(
-        commandName: "rampart",
-        abstract: "Unified macOS Firewall Control - One Place to Rule Them All",
+        commandName: "adsp",
+        abstract: "ADS ProtectX - Unified macOS Firewall Control",
         version: "1.0.0",
         subcommands: [
             Status.self,
@@ -39,7 +39,7 @@ struct Status: ParsableCommand {
         print("""
 
         ╔═══════════════════════════════════════════════════════════╗
-        ║              RAMPART - Firewall Status                     ║
+        ║           ADS ProtectX - Firewall Status                  ║
         ╚═══════════════════════════════════════════════════════════╝
 
         """)

@@ -2,14 +2,14 @@
 import PackageDescription
 
 let package = Package(
-    name: "rampart",
+    name: "adsp",
     platforms: [
         .macOS(.v13)
     ],
     products: [
         .executable(
-            name: "rampart",
-            targets: ["rampart"]
+            name: "adsp",
+            targets: ["adsp"]
         ),
     ],
     dependencies: [
@@ -18,7 +18,7 @@ let package = Package(
     ],
     targets: [
         .executableTarget(
-            name: "rampart",
+            name: "adsp",
             dependencies: [
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 "FirewallKit",

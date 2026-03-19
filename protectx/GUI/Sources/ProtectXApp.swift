@@ -1,11 +1,11 @@
-// Rampart - "One Place to Rule Them All"
+// ADS ProtectX - "One Place to Rule Them All"
 // Unified macOS Firewall Control Center
 
 import SwiftUI
 import FirewallKit
 
 @main
-struct RampartApp: App {
+struct ProtectXApp: App {
     @StateObject private var viewModel = FirewallViewModel()
 
     var body: some Scene {
@@ -17,7 +17,7 @@ struct RampartApp: App {
         .defaultSize(width: 900, height: 650)
 
         // Menu Bar Extra for quick access
-        MenuBarExtra("Rampart", systemImage: "shield.checkered") {
+        MenuBarExtra("ProtectX", systemImage: "shield.checkered") {
             MenuBarView()
                 .environmentObject(viewModel)
         }

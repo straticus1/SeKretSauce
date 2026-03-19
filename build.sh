@@ -16,7 +16,7 @@ Usage: ./build.sh [component]
 Components:
   cli              Build the SeKretSauce CLI tool (Go)
   cli-all          Build CLI for all architectures (amd64, arm64)
-  rampart          Build Rampart firewall module (Swift)
+  protectx         Build ADS ProtectX firewall module (Swift)
   gui              Build the GUI app (Swift/SwiftUI)
   installer        Build the GUI installer app (Swift)
   daemon           Build the security agent daemon (Swift)
@@ -26,7 +26,7 @@ Components:
 
 Examples:
   ./build.sh cli           # Quick CLI build for testing
-  ./build.sh rampart       # Build Rampart firewall module
+  ./build.sh protectx      # Build ADS ProtectX firewall module
   ./build.sh all           # Build everything
 
 EOF
@@ -59,12 +59,12 @@ build_cli_all() {
     echo "   ${BUILD_DIR}/sekretsauce-darwin-arm64"
 }
 
-build_rampart() {
-    echo "🔨 Building Rampart firewall module..."
-    cd rampart
+build_protectx() {
+    echo "🔨 Building ADS ProtectX firewall module..."
+    cd protectx
     ./build.sh
     cd ..
-    echo "✅ Rampart built: rampart/build/"
+    echo "✅ ProtectX built: protectx/build/"
 }
 
 build_gui() {
@@ -99,7 +99,7 @@ clean_all() {
     rm -rf "${BUILD_DIR}"
     rm -rf gui-apps/*/build
     rm -rf gui-apps/*/dist
-    rm -rf rampart/build
+    rm -rf protectx/build
     rm -rf .build
     echo "✅ Clean complete"
 }
@@ -109,7 +109,7 @@ build_all() {
     echo ""
     build_cli
     echo ""
-    build_rampart
+    build_protectx
     echo ""
     build_daemon
     echo ""
@@ -128,8 +128,8 @@ case "${1:-help}" in
     cli-all)
         build_cli_all
         ;;
-    rampart)
-        build_rampart
+    protectx)
+        build_protectx
         ;;
     gui)
         build_gui

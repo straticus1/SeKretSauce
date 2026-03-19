@@ -2,14 +2,14 @@
 import PackageDescription
 
 let package = Package(
-    name: "RampartGUI",
+    name: "ProtectXGUI",
     platforms: [
         .macOS(.v14)
     ],
     products: [
         .executable(
-            name: "Rampart",
-            targets: ["RampartGUI"]
+            name: "ProtectX",
+            targets: ["ProtectXGUI"]
         ),
     ],
     dependencies: [
@@ -17,7 +17,7 @@ let package = Package(
     ],
     targets: [
         .executableTarget(
-            name: "RampartGUI",
+            name: "ProtectXGUI",
             dependencies: ["FirewallKit"],
             path: "Sources"
         ),
