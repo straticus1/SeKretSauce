@@ -14,12 +14,12 @@ all: build
 
 build:
 	@echo "Building SeKretSauce CLI..."
-	@go build -ldflags "-X main.Version=$(VERSION)" -o $(CLI_NAME) ./cmd/sekretsauce
-	@echo "Build complete: ./$(CLI_NAME)"
+	@cd sekretsauce-cli && go build -ldflags "-X main.Version=$(VERSION)" -o ../bin/$(CLI_NAME) ./cmd/sekretsauce
+	@echo "Build complete: ./bin/$(CLI_NAME)"
 
 install: build
 	@echo "Installing to $(INSTALL_PATH)..."
-	@cp $(CLI_NAME) $(INSTALL_PATH)/
+	@cp bin/$(CLI_NAME) $(INSTALL_PATH)/
 	@chmod +x $(INSTALL_PATH)/$(CLI_NAME)
 	@echo "Installed: $(INSTALL_PATH)/$(CLI_NAME)"
 
@@ -30,33 +30,33 @@ uninstall:
 
 clean:
 	@echo "Cleaning..."
-	@rm -f $(CLI_NAME)
+	@rm -rf bin
 	@rm -rf $(BUILD_DIR)
-	@rm -rf gui/build
+	@rm -rf gui-apps/*/build
 	@echo "Clean complete"
 
 test:
 	@echo "Running tests..."
-	@go test -v ./...
+	@cd sekretsauce-cli && go test -v ./...
 
 # GUI build (requires Xcode/Swift)
 gui: build
 	@echo "Building macOS GUI app..."
-	@cd gui && ./build.sh
-	@echo "GUI build complete: gui/build/$(GUI_NAME).app"
+	@cd gui-apps/app && ./build.sh
+	@echo "GUI build complete: gui-apps/app/build/$(GUI_NAME).app"
 
 # Install GUI to Applications
 install-gui: gui
 	@echo "Installing GUI to /Applications..."
-	@cp -r gui/build/$(GUI_NAME).app /Applications/
+	@cp -r gui-apps/app/build/$(GUI_NAME).app /Applications/
 	@echo "Installed: /Applications/$(GUI_NAME).app"
 
 # Build release artifacts
 release: clean build gui
 	@echo "Creating release artifacts..."
 	@mkdir -p $(BUILD_DIR)/release
-	@cp $(CLI_NAME) $(BUILD_DIR)/release/
-	@cp -r gui/build/$(GUI_NAME).app $(BUILD_DIR)/release/
+	@cp bin/$(CLI_NAME) $(BUILD_DIR)/release/
+	@cp -r gui-apps/app/build/$(GUI_NAME).app $(BUILD_DIR)/release/
 	@cd $(BUILD_DIR)/release && zip -r ../$(CLI_NAME)-$(VERSION)-macos.zip .
 	@echo "Release artifact: $(BUILD_DIR)/$(CLI_NAME)-$(VERSION)-macos.zip"
 
@@ -95,33 +95,33 @@ EOF
 release-all: clean
 	@echo "Building for all architectures..."
 	@mkdir -p $(BUILD_DIR)
-	@GOOS=darwin GOARCH=amd64 go build -ldflags "-X main.Version=$(VERSION)" -o $(BUILD_DIR)/$(CLI_NAME)-darwin-amd64 ./cmd/sekretsauce
-	@GOOS=darwin GOARCH=arm64 go build -ldflags "-X main.Version=$(VERSION)" -o $(BUILD_DIR)/$(CLI_NAME)-darwin-arm64 ./cmd/sekretsauce
+	@cd sekretsauce-cli && GOOS=darwin GOARCH=amd64 go build -ldflags "-X main.Version=$(VERSION)" -o ../$(BUILD_DIR)/$(CLI_NAME)-darwin-amd64 ./cmd/sekretsauce
+	@cd sekretsauce-cli && GOOS=darwin GOARCH=arm64 go build -ldflags "-X main.Version=$(VERSION)" -o ../$(BUILD_DIR)/$(CLI_NAME)-darwin-arm64 ./cmd/sekretsauce
 	@echo "Built: $(BUILD_DIR)/$(CLI_NAME)-darwin-amd64"
 	@echo "Built: $(BUILD_DIR)/$(CLI_NAME)-darwin-arm64"
 
 # Development helpers
 dev: build
-	@./$(CLI_NAME) --help
+	@./bin/$(CLI_NAME) --help
 
 scan: build
-	@./$(CLI_NAME) scan
+	@./bin/$(CLI_NAME) scan
 
 # Run specific scans
 scan-keychain: build
-	@./$(CLI_NAME) scan keychain
+	@./bin/$(CLI_NAME) scan keychain
 
 scan-hidden: build
-	@./$(CLI_NAME) scan hidden
+	@./bin/$(CLI_NAME) scan hidden
 
 scan-secrets: build
-	@./$(CLI_NAME) scan secrets --path .
+	@./bin/$(CLI_NAME) scan secrets --path .
 
 scan-wallets: build
-	@./$(CLI_NAME) scan wallets
+	@./bin/$(CLI_NAME) scan wallets
 
 scan-cas: build
-	@./$(CLI_NAME) scan cas
+	@./bin/$(CLI_NAME) scan cas
 
 # Swift security agent build
 swift-build:
@@ -132,19 +132,19 @@ swift-build:
 # Build GUI installer
 installer: swift-build
 	@echo "Building GUI installer..."
-	@cd InstallerApp && ./build.sh
-	@echo "Installer build complete: dist/SeKretSauce Installer.app"
+	@cd gui-apps/installer && ./build.sh
+	@echo "Installer build complete: gui-apps/installer/dist/SeKretSauce Installer.app"
 
 # Install Swift daemon
 install-daemon: swift-build
 	@echo "Installing security agent daemon..."
-	@sudo ./Installer/install.sh
+	@sudo ./scripts/install.sh
 	@echo "Daemon installed"
 
 # Uninstall Swift daemon
 uninstall-daemon:
 	@echo "Uninstalling security agent daemon..."
-	@sudo ./Installer/uninstall.sh
+	@sudo ./scripts/uninstall.sh
 	@echo "Daemon uninstalled"
 
 # Help
