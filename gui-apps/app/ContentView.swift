@@ -91,7 +91,11 @@ struct OverviewView: View {
                         Text("SeKretSauce")
                             .font(.largeTitle)
                             .fontWeight(.bold)
+                        Text("A SecretServer.io product of After Dark Systems, LLC")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                         Text("Security Swiss Army Knife for macOS")
+                            .font(.subheadline)
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
