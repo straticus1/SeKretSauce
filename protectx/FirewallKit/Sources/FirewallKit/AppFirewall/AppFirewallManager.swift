@@ -3,6 +3,30 @@
 
 import Foundation
 
+enum AppFirewallCommand {
+    private static let executable = "/usr/libexec/ApplicationFirewall/socketfilterfw"
+
+    static func command(_ arguments: [String]) -> CommandInvocation {
+        CommandInvocation(executable: executable, arguments: arguments)
+    }
+
+    static func add(path: String) -> CommandInvocation {
+        command(["--add", path])
+    }
+
+    static func remove(path: String) -> CommandInvocation {
+        command(["--remove", path])
+    }
+
+    static func allow(path: String) -> CommandInvocation {
+        command(["--unblockapp", path])
+    }
+
+    static func block(path: String) -> CommandInvocation {
+        command(["--blockapp", path])
+    }
+}
+
 public final class AppFirewallManager {
 
     // MARK: - Properties
@@ -14,9 +38,15 @@ public final class AppFirewallManager {
     public private(set) var allowDownloadedSigned: Bool = true
     public private(set) var apps: [AppFirewallRule] = []
 
-    private let socketFilterFW = "/usr/libexec/ApplicationFirewall/socketfilterfw"
+    private let runner: SystemCommandRunning
 
     public init() {
+        self.runner = SystemCommandRunner()
+        refresh()
+    }
+
+    init(runner: SystemCommandRunning) {
+        self.runner = runner
         refresh()
     }
 
@@ -37,54 +67,38 @@ public final class AppFirewallManager {
     /// Enable the application firewall
     public func enable() throws {
         try requireRoot()
-        let result = shell("\(socketFilterFW) --setglobalstate on")
-        if result.contains("enabled") || result.contains("already") {
-            isEnabled = true
-        } else {
-            throw AppFirewallError.enableFailed(result)
-        }
+        _ = try run(["--setglobalstate", "on"])
+        isEnabled = true
     }
 
     /// Disable the application firewall
     public func disable() throws {
         try requireRoot()
-        let result = shell("\(socketFilterFW) --setglobalstate off")
-        if result.contains("disabled") || result.contains("already") {
-            isEnabled = false
-        } else {
-            throw AppFirewallError.disableFailed(result)
-        }
+        _ = try run(["--setglobalstate", "off"])
+        isEnabled = false
     }
 
     /// Set stealth mode (don't respond to pings/probes)
     public func setStealthMode(_ enabled: Bool) throws {
         try requireRoot()
         let flag = enabled ? "on" : "off"
-        let result = shell("\(socketFilterFW) --setstealthmode \(flag)")
-        if result.contains("enabled") || result.contains("disabled") || result.contains("already") {
-            stealthMode = enabled
-        } else {
-            throw AppFirewallError.stealthModeFailed(result)
-        }
+        _ = try run(["--setstealthmode", flag])
+        stealthMode = enabled
     }
 
     /// Block all incoming connections
     public func setBlockAll(_ enabled: Bool) throws {
         try requireRoot()
         let flag = enabled ? "on" : "off"
-        let result = shell("\(socketFilterFW) --setblockall \(flag)")
-        if result.contains("enabled") || result.contains("disabled") || result.contains("already") {
-            blockAll = enabled
-        } else {
-            throw AppFirewallError.blockAllFailed(result)
-        }
+        _ = try run(["--setblockall", flag])
+        blockAll = enabled
     }
 
     /// Allow signed applications automatically
     public func setAllowSigned(_ enabled: Bool) throws {
         try requireRoot()
         let flag = enabled ? "on" : "off"
-        let result = shell("\(socketFilterFW) --setallowsigned \(flag)")
+        _ = try run(["--setallowsigned", flag])
         allowSigned = enabled
     }
 
@@ -92,7 +106,7 @@ public final class AppFirewallManager {
     public func setAllowSignedDownloaded(_ enabled: Bool) throws {
         try requireRoot()
         let flag = enabled ? "on" : "off"
-        let result = shell("\(socketFilterFW) --setallowsignedapp \(flag)")
+        _ = try run(["--setallowsignedapp", flag])
         allowDownloadedSigned = enabled
     }
 
@@ -101,24 +115,20 @@ public final class AppFirewallManager {
     /// Add a rule for an application
     public func addRule(_ rule: AppFirewallRule) throws {
         try requireRoot()
-        let flag = rule.allowed ? "--add" : "--blockapp"
-        let result = shell("\(socketFilterFW) \(flag) \"\(rule.path)\"")
-        if result.contains("added") || result.contains("already") {
-            refresh()
-        } else {
-            throw AppFirewallError.addRuleFailed(result)
-        }
+        let path = try validatedApplicationPath(rule.path)
+        _ = try runner.runChecked(AppFirewallCommand.add(path: path))
+        _ = try runner.runChecked(
+            rule.allowed ? AppFirewallCommand.allow(path: path) : AppFirewallCommand.block(path: path)
+        )
+        refresh()
     }
 
     /// Remove a rule for an application
     public func removeRule(for path: String) throws {
         try requireRoot()
-        let result = shell("\(socketFilterFW) --remove \"\(path)\"")
-        if result.contains("removed") || result.contains("not found") {
-            refresh()
-        } else {
-            throw AppFirewallError.removeRuleFailed(result)
-        }
+        let validatedPath = try validatedApplicationPath(path)
+        _ = try runner.runChecked(AppFirewallCommand.remove(path: validatedPath))
+        refresh()
     }
 
     /// Allow an application
@@ -159,32 +169,32 @@ public final class AppFirewallManager {
     // MARK: - Private Helpers
 
     private func getGlobalState() -> Bool {
-        let result = shell("\(socketFilterFW) --getglobalstate")
+        let result = (try? run(["--getglobalstate"])) ?? ""
         return result.contains("enabled")
     }
 
     private func getStealthMode() -> Bool {
-        let result = shell("\(socketFilterFW) --getstealthmode")
+        let result = (try? run(["--getstealthmode"])) ?? ""
         return result.contains("enabled")
     }
 
     private func getBlockAll() -> Bool {
-        let result = shell("\(socketFilterFW) --getblockall")
+        let result = (try? run(["--getblockall"])) ?? ""
         return result.contains("enabled") && !result.contains("DISABLED")
     }
 
     private func getAllowSigned() -> Bool {
-        let result = shell("\(socketFilterFW) --getallowsigned")
+        let result = (try? run(["--getallowsigned"])) ?? ""
         return result.contains("enabled") || result.contains("ENABLED")
     }
 
     private func getAllowSignedDownloaded() -> Bool {
-        let result = shell("\(socketFilterFW) --getallowsignedapp")
+        let result = (try? run(["--getallowsignedapp"])) ?? ""
         return result.contains("enabled") || result.contains("ENABLED")
     }
 
     private func listApps() -> [AppFirewallRule] {
-        let result = shell("\(socketFilterFW) --listapps")
+        let result = (try? run(["--listapps"])) ?? ""
         var rules: [AppFirewallRule] = []
 
         // Parse output format:
@@ -232,24 +242,19 @@ public final class AppFirewallManager {
         }
     }
 
-    private func shell(_ command: String) -> String {
-        let task = Process()
-        let pipe = Pipe()
+    private func run(_ arguments: [String]) throws -> String {
+        try runner.runChecked(AppFirewallCommand.command(arguments))
+    }
 
-        task.standardOutput = pipe
-        task.standardError = pipe
-        task.arguments = ["-c", command]
-        task.launchPath = "/bin/sh"
-
-        do {
-            try task.run()
-            task.waitUntilExit()
-        } catch {
-            return ""
+    private func validatedApplicationPath(_ path: String) throws -> String {
+        guard path.hasPrefix("/"),
+              !path.contains("\0"),
+              !path.contains("\n"),
+              !path.contains("\r"),
+              FileManager.default.fileExists(atPath: path) else {
+            throw AppFirewallError.invalidApplicationPath
         }
-
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        return String(data: data, encoding: .utf8) ?? ""
+        return URL(fileURLWithPath: path).standardizedFileURL.path
     }
 }
 
@@ -287,6 +292,7 @@ public enum AppFirewallError: Error, LocalizedError {
     case blockAllFailed(String)
     case addRuleFailed(String)
     case removeRuleFailed(String)
+    case invalidApplicationPath
 
     public var errorDescription: String? {
         switch self {
@@ -304,6 +310,8 @@ public enum AppFirewallError: Error, LocalizedError {
             return "Failed to add app rule: \(msg)"
         case .removeRuleFailed(let msg):
             return "Failed to remove app rule: \(msg)"
+        case .invalidApplicationPath:
+            return "Application path must be an existing absolute path"
         }
     }
 }

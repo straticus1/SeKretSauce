@@ -2,11 +2,15 @@ package breach
 
 import (
 	"crypto/sha1"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/mail"
+	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -15,11 +19,11 @@ import (
 
 // ScanResult contains breach detection results
 type ScanResult struct {
-	CheckedAt    time.Time          `json:"checked_at"`
-	TotalChecked int                `json:"total_checked"`
-	Compromised  []CompromisedItem  `json:"compromised,omitempty"`
-	Clean        int                `json:"clean"`
-	Errors       []string           `json:"errors,omitempty"`
+	CheckedAt    time.Time         `json:"checked_at"`
+	TotalChecked int               `json:"total_checked"`
+	Compromised  []CompromisedItem `json:"compromised,omitempty"`
+	Clean        int               `json:"clean"`
+	Errors       []string          `json:"errors,omitempty"`
 }
 
 // CompromisedItem represents a compromised credential
@@ -47,9 +51,9 @@ type HIBPBreach struct {
 }
 
 const (
-	hibpAPIBase = "https://haveibeenpwned.com/api/v3"
+	hibpAPIBase           = "https://haveibeenpwned.com/api/v3"
 	hibpPwnedPasswordsAPI = "https://api.pwnedpasswords.com"
-	userAgent   = "SeKretSauce-Security-Tool"
+	userAgent             = "SeKretSauce-Security-Tool"
 )
 
 // CheckEmail checks if an email has been in known breaches
@@ -63,8 +67,7 @@ func CheckEmail(email string) (*ScanResult, error) {
 
 	breaches, err := checkEmailHIBP(email)
 	if err != nil {
-		result.Errors = append(result.Errors, fmt.Sprintf("HIBP check failed: %v", err))
-		return result, nil
+		return nil, fmt.Errorf("HIBP check failed: %w", err)
 	}
 
 	if len(breaches) > 0 {
@@ -108,8 +111,7 @@ func CheckDomain(domain string) (*ScanResult, error) {
 
 	breaches, err := checkDomainHIBP(domain)
 	if err != nil {
-		result.Errors = append(result.Errors, fmt.Sprintf("HIBP domain check failed: %v", err))
-		return result, nil
+		return nil, fmt.Errorf("HIBP domain check failed: %w", err)
 	}
 
 	if len(breaches) > 0 {
@@ -134,10 +136,13 @@ func CheckDomain(domain string) (*ScanResult, error) {
 
 // CheckCredentials checks keychain items against breach databases
 func CheckCredentials(items []keychain.KeychainItem) (*ScanResult, error) {
+	if strings.TrimSpace(os.Getenv("HIBP_API_KEY")) == "" {
+		return nil, fmt.Errorf("HIBP_API_KEY is required for account breach lookups")
+	}
 	result := &ScanResult{
-		CheckedAt:    time.Now(),
-		Compromised:  []CompromisedItem{},
-		Errors:       []string{},
+		CheckedAt:   time.Now(),
+		Compromised: []CompromisedItem{},
+		Errors:      []string{},
 	}
 
 	// Extract unique accounts (emails) from keychain items
@@ -227,7 +232,7 @@ func CheckPasswordPwned(password string) (bool, int, error) {
 		return false, 0, fmt.Errorf("API returned status %d", resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 	if err != nil {
 		return false, 0, err
 	}
@@ -235,8 +240,8 @@ func CheckPasswordPwned(password string) (bool, int, error) {
 	// Search for our suffix in the response
 	lines := strings.Split(string(body), "\r\n")
 	for _, line := range lines {
-		parts := strings.Split(line, ":")
-		if len(parts) == 2 && parts[0] == suffix {
+		parts := strings.SplitN(line, ":", 2)
+		if len(parts) == 2 && subtle.ConstantTimeCompare([]byte(parts[0]), []byte(suffix)) == 1 {
 			var count int
 			fmt.Sscanf(parts[1], "%d", &count)
 			return true, count, nil
@@ -248,20 +253,25 @@ func CheckPasswordPwned(password string) (bool, int, error) {
 
 // checkEmailHIBP checks an email against HaveIBeenPwned
 func checkEmailHIBP(email string) ([]HIBPBreach, error) {
-	// Note: The v3 API requires an API key for email lookups
-	// For demonstration, we'll use a simpler approach
-	// In production, you'd need to purchase an API key from HIBP
+	address, err := mail.ParseAddress(email)
+	if err != nil || !strings.EqualFold(address.Address, email) {
+		return nil, fmt.Errorf("invalid email address")
+	}
+	apiKey := strings.TrimSpace(os.Getenv("HIBP_API_KEY"))
+	if apiKey == "" {
+		return nil, fmt.Errorf("HIBP_API_KEY is required for account breach lookups")
+	}
 
-	url := fmt.Sprintf("%s/breachedaccount/%s?truncateResponse=false", hibpAPIBase, email)
+	requestURL := fmt.Sprintf("%s/breachedaccount/%s?truncateResponse=false", hibpAPIBase, url.PathEscape(email))
 
 	client := &http.Client{Timeout: 10 * time.Second}
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequest("GET", requestURL, nil)
 	if err != nil {
 		return nil, err
 	}
 
 	req.Header.Set("User-Agent", userAgent)
-	// req.Header.Set("hibp-api-key", apiKey) // Would need API key for production
+	req.Header.Set("hibp-api-key", apiKey)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -295,11 +305,15 @@ func checkEmailHIBP(email string) ([]HIBPBreach, error) {
 
 // checkDomainHIBP checks breaches for a domain
 func checkDomainHIBP(domain string) ([]HIBPBreach, error) {
+	domain = strings.TrimSpace(strings.ToLower(domain))
+	if !validDomain(domain) {
+		return nil, fmt.Errorf("invalid domain")
+	}
 	// Get all breaches and filter by domain
-	url := fmt.Sprintf("%s/breaches?domain=%s", hibpAPIBase, domain)
+	requestURL := fmt.Sprintf("%s/breaches?domain=%s", hibpAPIBase, url.QueryEscape(domain))
 
 	client := &http.Client{Timeout: 10 * time.Second}
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequest("GET", requestURL, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -326,6 +340,28 @@ func checkDomainHIBP(domain string) ([]HIBPBreach, error) {
 	}
 
 	return breaches, nil
+}
+
+func validDomain(domain string) bool {
+	if len(domain) == 0 || len(domain) > 253 || strings.ContainsAny(domain, "/:@?#") {
+		return false
+	}
+	labels := strings.Split(domain, ".")
+	if len(labels) < 2 {
+		return false
+	}
+	for _, label := range labels {
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, character := range label {
+			if (character < 'a' || character > 'z') &&
+				(character < '0' || character > '9') && character != '-' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // isEmailLike checks if a string looks like an email address

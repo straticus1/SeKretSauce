@@ -115,7 +115,7 @@ public final class NetStateMonitor {
 
     private func getConnections() -> [Connection] {
         // Use lsof for connection info (more reliable cross-version)
-        let output = shell("lsof -i -n -P 2>/dev/null | grep -E 'TCP|UDP'")
+        let output = run("/usr/sbin/lsof", arguments: ["-i", "-n", "-P"])
         var conns: [Connection] = []
 
         for line in output.split(separator: "\n") {
@@ -126,6 +126,9 @@ public final class NetStateMonitor {
             let processName = parts[0]
             let pid = Int(parts[1]) ?? 0
             let proto = parts[7].hasPrefix("TCP") ? "TCP" : "UDP"
+            guard parts[7].hasPrefix("TCP") || parts[7].hasPrefix("UDP") else {
+                continue
+            }
 
             // Parse connection string: local->remote or *:port (LISTEN)
             let connStr = parts[8]
@@ -160,13 +163,16 @@ public final class NetStateMonitor {
     }
 
     private func getListeners() -> [Listener] {
-        let output = shell("lsof -i -n -P 2>/dev/null | grep LISTEN")
+        let output = run("/usr/sbin/lsof", arguments: ["-i", "-n", "-P"])
         var listeners: [Listener] = []
 
         for line in output.split(separator: "\n") {
             let parts = line.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
 
             guard parts.count >= 9 else { continue }
+            guard parts.dropFirst(9).contains(where: { $0.contains("LISTEN") }) else {
+                continue
+            }
 
             let processName = parts[0]
             let pid = Int(parts[1]) ?? 0
@@ -199,24 +205,23 @@ public final class NetStateMonitor {
         return (str, 0)
     }
 
-    private func shell(_ command: String) -> String {
+    private func run(_ executable: String, arguments: [String]) -> String {
         let task = Process()
         let pipe = Pipe()
 
         task.standardOutput = pipe
         task.standardError = pipe
-        task.arguments = ["-c", command]
-        task.launchPath = "/bin/sh"
+        task.executableURL = URL(fileURLWithPath: executable)
+        task.arguments = arguments
 
         do {
             try task.run()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
             task.waitUntilExit()
+            return String(data: data, encoding: .utf8) ?? ""
         } catch {
             return ""
         }
-
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        return String(data: data, encoding: .utf8) ?? ""
     }
 }
 

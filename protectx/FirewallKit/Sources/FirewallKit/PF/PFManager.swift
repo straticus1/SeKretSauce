@@ -1,173 +1,229 @@
 // PFManager - Packet Filter management for macOS
-// Wraps pfctl and pf.conf parsing/generation
+// Manages ProtectX rules in a dedicated PF anchor without replacing pf.conf.
 
 import Foundation
+import Darwin
 
 public final class PFManager {
-
-    // MARK: - Properties
-
-    public private(set) var isEnabled: Bool = false
+    public private(set) var isEnabled = false
     public private(set) var rules: [PFRule] = []
 
     private let pfctlPath = "/sbin/pfctl"
     private let pfConfPath = "/etc/pf.conf"
+    private let runner: SystemCommandRunning
 
     public init() {
+        self.runner = SystemCommandRunner()
         refresh()
     }
 
-    // MARK: - Status
+    init(runner: SystemCommandRunning) {
+        self.runner = runner
+        refresh()
+    }
 
-    /// Refresh status from system
     public func refresh() {
         isEnabled = checkEnabled()
         rules = parseCurrentRules()
     }
 
-    private func checkEnabled() -> Bool {
-        let output = shell("\(pfctlPath) -s info 2>/dev/null")
-        return output.contains("Status: Enabled")
-    }
-
-    // MARK: - Control
-
-    /// Enable packet filter
     public func enable() throws {
         try requireRoot()
-        let result = shell("\(pfctlPath) -e 2>&1")
-        if result.contains("pf enabled") || result.contains("already enabled") {
-            isEnabled = true
-        } else {
-            throw PFError.enableFailed(result)
-        }
+        _ = try run(["-e"])
+        isEnabled = true
     }
 
-    /// Disable packet filter
     public func disable() throws {
         try requireRoot()
-        let result = shell("\(pfctlPath) -d 2>&1")
-        if result.contains("pf disabled") || result.contains("already disabled") {
-            isEnabled = false
-        } else {
-            throw PFError.disableFailed(result)
-        }
+        _ = try run(["-d"])
+        isEnabled = false
     }
 
-    /// Reload rules from pf.conf
     public func reload() throws {
         try requireRoot()
-        let result = shell("\(pfctlPath) -f \(pfConfPath) 2>&1")
-        if !result.isEmpty && !result.contains("rules loaded") {
-            throw PFError.reloadFailed(result)
-        }
+        _ = try run(["-f", pfConfPath])
         refresh()
     }
 
-    // MARK: - Rules
-
-    /// Add a rule to pf
     public func addRule(_ rule: PFRule) throws {
         try requireRoot()
-        rules.append(rule)
-        try writeRules()
-        try reload()
+        try rule.validate()
+
+        let updatedRules = rules + [rule]
+        try installManagedAnchorIfNeeded()
+        try writeAndLoadManagedRules(updatedRules)
+        rules = updatedRules
     }
 
-    /// Remove a rule from pf
     public func removeRule(at index: Int) throws {
         try requireRoot()
-        guard index >= 0 && index < rules.count else {
+        guard rules.indices.contains(index) else {
             throw PFError.invalidRuleIndex
         }
-        rules.remove(at: index)
-        try writeRules()
-        try reload()
+
+        var updatedRules = rules
+        updatedRules.remove(at: index)
+        try installManagedAnchorIfNeeded()
+        try writeAndLoadManagedRules(updatedRules)
+        rules = updatedRules
     }
 
-    /// Get current rules as human-readable text
     public func rulesDescription() -> String {
-        if rules.isEmpty {
-            return "No rules configured"
+        guard !rules.isEmpty else {
+            return "No ProtectX-managed rules configured"
         }
         return rules.enumerated().map { index, rule in
             "[\(index)] \(rule.description)"
         }.joined(separator: "\n")
     }
 
-    // MARK: - Parsing
+    private func checkEnabled() -> Bool {
+        guard let output = try? run(["-s", "info"]) else {
+            return false
+        }
+        return output.contains("Status: Enabled")
+    }
 
     private func parseCurrentRules() -> [PFRule] {
-        let output = shell("\(pfctlPath) -s rules 2>/dev/null")
-        return output
-            .split(separator: "\n")
-            .compactMap { PFRule.parse(String($0)) }
+        guard let output = try? run([
+            "-a", ManagedPFConfiguration.anchorName,
+            "-s", "rules"
+        ]) else {
+            return []
+        }
+        return output.split(separator: "\n").compactMap { PFRule.parse(String($0)) }
     }
 
-    // MARK: - Writing
+    private func installManagedAnchorIfNeeded() throws {
+        let existing: String
+        do {
+            existing = try String(contentsOfFile: pfConfPath, encoding: .utf8)
+        } catch {
+            throw PFError.configurationFailed("Could not read \(pfConfPath): \(error.localizedDescription)")
+        }
 
-    private func writeRules() throws {
-        // Generate pf.conf content
-        var content = """
-        # Rampart - Managed pf.conf
-        # Do not edit manually - use Rampart CLI or GUI
+        let updated = ManagedPFConfiguration.installAnchorReferences(in: existing)
+        guard updated != existing else {
+            return
+        }
 
-        # Default policies
-        set block-policy drop
-        set skip on lo0
+        let temporaryPath = try SecureAtomicFile.createSibling(
+            of: pfConfPath,
+            contents: Data(updated.utf8),
+            mode: 0o644
+        )
 
-        # Scrub incoming
-        scrub in all
+        do {
+            _ = try run(["-n", "-f", temporaryPath])
+            try SecureAtomicFile.commit(temporaryPath: temporaryPath, destinationPath: pfConfPath)
+            _ = try run(["-f", pfConfPath])
+        } catch {
+            SecureAtomicFile.removeIfPresent(temporaryPath)
+            throw PFError.configurationFailed(error.localizedDescription)
+        }
+    }
 
-        # Rules managed by Rampart
-        """
-
+    private func writeAndLoadManagedRules(_ rules: [PFRule]) throws {
         for rule in rules {
-            content += "\n\(rule.toPFSyntax())"
+            try rule.validate()
         }
 
-        content += "\n"
+        let content = rules.map { $0.toPFSyntax() }.joined(separator: "\n") + "\n"
+        let temporaryPath = try SecureAtomicFile.createSibling(
+            of: ManagedPFConfiguration.anchorPath,
+            contents: Data(content.utf8),
+            mode: 0o600
+        )
 
-        // Write to temp file, then move (atomic)
-        let tempPath = "/tmp/pf.conf.rampart"
-        try content.write(toFile: tempPath, atomically: true, encoding: .utf8)
-
-        let result = shell("sudo mv \(tempPath) \(pfConfPath)")
-        if !result.isEmpty {
-            throw PFError.writeFailed(result)
+        do {
+            _ = try run([
+                "-n",
+                "-a", ManagedPFConfiguration.anchorName,
+                "-f", temporaryPath
+            ])
+            try SecureAtomicFile.commit(
+                temporaryPath: temporaryPath,
+                destinationPath: ManagedPFConfiguration.anchorPath
+            )
+            _ = try run([
+                "-a", ManagedPFConfiguration.anchorName,
+                "-f", ManagedPFConfiguration.anchorPath
+            ])
+        } catch {
+            SecureAtomicFile.removeIfPresent(temporaryPath)
+            throw PFError.writeFailed(error.localizedDescription)
         }
     }
 
-    // MARK: - Helpers
+    private func run(_ arguments: [String]) throws -> String {
+        try runner.runChecked(CommandInvocation(executable: pfctlPath, arguments: arguments))
+    }
 
     private func requireRoot() throws {
-        if getuid() != 0 {
+        guard getuid() == 0 else {
             throw PFError.requiresRoot
         }
     }
-
-    private func shell(_ command: String) -> String {
-        let task = Process()
-        let pipe = Pipe()
-
-        task.standardOutput = pipe
-        task.standardError = pipe
-        task.arguments = ["-c", command]
-        task.launchPath = "/bin/sh"
-
-        do {
-            try task.run()
-            task.waitUntilExit()
-        } catch {
-            return ""
-        }
-
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        return String(data: data, encoding: .utf8) ?? ""
-    }
 }
 
-// MARK: - Errors
+private enum SecureAtomicFile {
+    static func createSibling(of destinationPath: String, contents: Data, mode: mode_t) throws -> String {
+        let directory = (destinationPath as NSString).deletingLastPathComponent
+        let name = (destinationPath as NSString).lastPathComponent
+        let temporaryPath = "\(directory)/.\(name).protectx-\(UUID().uuidString)"
+
+        let descriptor = open(
+            temporaryPath,
+            O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW,
+            mode
+        )
+        guard descriptor >= 0 else {
+            throw PFError.writeFailed(String(cString: strerror(errno)))
+        }
+
+        var shouldRemove = true
+        defer {
+            close(descriptor)
+            if shouldRemove {
+                unlink(temporaryPath)
+            }
+        }
+
+        try contents.withUnsafeBytes { bytes in
+            guard var pointer = bytes.baseAddress else {
+                return
+            }
+            var remaining = bytes.count
+            while remaining > 0 {
+                let written = Darwin.write(descriptor, pointer, remaining)
+                guard written > 0 else {
+                    throw PFError.writeFailed(String(cString: strerror(errno)))
+                }
+                pointer = pointer.advanced(by: written)
+                remaining -= written
+            }
+        }
+
+        guard fchmod(descriptor, mode) == 0, fsync(descriptor) == 0 else {
+            throw PFError.writeFailed(String(cString: strerror(errno)))
+        }
+
+        shouldRemove = false
+        return temporaryPath
+    }
+
+    static func commit(temporaryPath: String, destinationPath: String) throws {
+        guard rename(temporaryPath, destinationPath) == 0 else {
+            let message = String(cString: strerror(errno))
+            removeIfPresent(temporaryPath)
+            throw PFError.writeFailed(message)
+        }
+    }
+
+    static func removeIfPresent(_ path: String) {
+        unlink(path)
+    }
+}
 
 public enum PFError: Error, LocalizedError {
     case requiresRoot
@@ -176,22 +232,25 @@ public enum PFError: Error, LocalizedError {
     case reloadFailed(String)
     case writeFailed(String)
     case parseFailed(String)
+    case configurationFailed(String)
     case invalidRuleIndex
 
     public var errorDescription: String? {
         switch self {
         case .requiresRoot:
             return "This operation requires root privileges"
-        case .enableFailed(let msg):
-            return "Failed to enable pf: \(msg)"
-        case .disableFailed(let msg):
-            return "Failed to disable pf: \(msg)"
-        case .reloadFailed(let msg):
-            return "Failed to reload pf rules: \(msg)"
-        case .writeFailed(let msg):
-            return "Failed to write pf.conf: \(msg)"
-        case .parseFailed(let msg):
-            return "Failed to parse pf rule: \(msg)"
+        case .enableFailed(let message):
+            return "Failed to enable PF: \(message)"
+        case .disableFailed(let message):
+            return "Failed to disable PF: \(message)"
+        case .reloadFailed(let message):
+            return "Failed to reload PF rules: \(message)"
+        case .writeFailed(let message):
+            return "Failed to write PF rules: \(message)"
+        case .parseFailed(let message):
+            return "Failed to parse PF rule: \(message)"
+        case .configurationFailed(let message):
+            return "Failed to configure ProtectX PF anchor: \(message)"
         case .invalidRuleIndex:
             return "Invalid rule index"
         }

@@ -1,4 +1,5 @@
 import Foundation
+import Common
 
 /// Parses SSH command line arguments to extract connection details and tunnel configurations
 public struct SSHArgumentParser {
@@ -30,7 +31,7 @@ public struct SSHArgumentParser {
 
     /// Parse SSH command line arguments
     public func parse(_ arguments: [String]) -> ParsedSSHCommand? {
-        var args = Array(arguments.dropFirst()) // Remove 'ssh' or wrapper name
+        let args = Array(arguments.dropFirst()) // Remove 'ssh' or wrapper name
         var user: String?
         var host: String?
         var port: UInt16 = 22

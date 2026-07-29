@@ -143,23 +143,53 @@ class SeKretSauceViewModel: ObservableObject {
     @Published var breaches: [BreachResult] = []
     @Published var breachCheckComplete = false
 
-    @AppStorage("cliPath") private var cliPath = "/usr/local/bin/sekretsauce"
+    @AppStorage("cliPath") private var cliPath = ""
 
     // MARK: - CLI Execution
 
     private func runCLI(args: [String]) async throws -> Data {
-        let process = Process()
-        let pipe = Pipe()
+        let executablePath = try resolvedCLIPath()
+        return try await Task.detached {
+            let process = Process()
+            let pipe = Pipe()
 
-        process.executableURL = URL(fileURLWithPath: cliPath)
-        process.arguments = args + ["--json"]
-        process.standardOutput = pipe
-        process.standardError = pipe
+            process.executableURL = URL(fileURLWithPath: executablePath)
+            process.arguments = args + ["--json"]
+            process.standardOutput = pipe
+            process.standardError = pipe
 
-        try process.run()
-        process.waitUntilExit()
+            try process.run()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            guard process.terminationReason == .exit, process.terminationStatus == 0 else {
+                let message = String(data: data, encoding: .utf8) ?? "CLI failed"
+                throw CLIError.failed(status: process.terminationStatus, message: message)
+            }
+            return data
+        }.value
+    }
 
-        return pipe.fileHandleForReading.readDataToEndOfFile()
+    private func resolvedCLIPath() throws -> String {
+        var candidates: [URL] = []
+        if !cliPath.isEmpty {
+            candidates.append(URL(fileURLWithPath: cliPath))
+        }
+        if let bundled = Bundle.main.url(forResource: "sekretsauce", withExtension: nil) {
+            candidates.append(bundled)
+        }
+        candidates.append(URL(fileURLWithPath: "/opt/homebrew/bin/sekretsauce"))
+        candidates.append(URL(fileURLWithPath: "/usr/local/bin/sekretsauce"))
+
+        for candidate in candidates {
+            let resolved = candidate.resolvingSymlinksInPath()
+            var isDirectory: ObjCBool = false
+            if FileManager.default.fileExists(atPath: resolved.path, isDirectory: &isDirectory),
+               !isDirectory.boolValue,
+               FileManager.default.isExecutableFile(atPath: resolved.path) {
+                return resolved.path
+            }
+        }
+        throw CLIError.notFound
     }
 
     // MARK: - Full Scan
@@ -169,23 +199,11 @@ class SeKretSauceViewModel: ObservableObject {
             isScanning = true
             scanStatus = "Starting full scan..."
 
-            do {
-                // Scan keychain
-                scanStatus = "Scanning Keychain..."
-                await scanKeychain()
-
-                // Scan hidden processes
-                scanStatus = "Hunting hidden processes..."
-                await scanHidden()
-
-                // Scan apps
-                scanStatus = "Inspecting applications..."
-                await scanApps()
-
-                scanStatus = "Scan complete!"
-            } catch {
-                scanStatus = "Error: \(error.localizedDescription)"
-            }
+            findings.removeAll()
+            await performKeychainScan()
+            await performHiddenScan()
+            await performAppsScan()
+            scanStatus = "Scan complete!"
 
             isScanning = false
         }
@@ -240,13 +258,19 @@ class SeKretSauceViewModel: ObservableObject {
 
     func scanKeychain() {
         Task {
-            isScanning = true
-            scanStatus = "Scanning Keychain..."
+            await performKeychainScan()
+        }
+    }
 
-            do {
-                let data = try await runCLI(args: ["scan", "keychain"])
+    private func performKeychainScan() async {
+        isScanning = true
+        scanStatus = "Scanning Keychain..."
+        findings.removeAll { $0.category == "Keychain" }
 
-                if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+        do {
+            let data = try await runCLI(args: ["scan", "keychain"])
+
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
                     keychainCount = json["total_items"] as? Int ?? 0
 
                     if let items = json["items"] as? [[String: Any]] {
@@ -273,13 +297,11 @@ class SeKretSauceViewModel: ObservableObject {
                             }
                         }
                     }
-                }
-            } catch {
-                scanStatus = "Keychain scan failed: \(error.localizedDescription)"
             }
-
-            isScanning = false
+        } catch {
+            scanStatus = "Keychain scan failed: \(error.localizedDescription)"
         }
+        isScanning = false
     }
 
     // MARK: - Certificate Check
@@ -331,13 +353,19 @@ class SeKretSauceViewModel: ObservableObject {
 
     func scanHidden() {
         Task {
-            isScanning = true
-            scanStatus = "Hunting hidden processes..."
+            await performHiddenScan()
+        }
+    }
 
-            do {
-                let data = try await runCLI(args: ["scan", "hidden"])
+    private func performHiddenScan() async {
+        isScanning = true
+        scanStatus = "Hunting hidden processes..."
+        findings.removeAll { $0.category == "Processes" || $0.category == "Launch Agents" }
 
-                if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+        do {
+            let data = try await runCLI(args: ["scan", "hidden"])
+
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
                     launchAgentCount = json["launch_agents_checked"] as? Int ?? 0
 
                     if let procs = json["suspicious_processes"] as? [[String: Any]] {
@@ -378,26 +406,31 @@ class SeKretSauceViewModel: ObservableObject {
                             ))
                         }
                     }
-                }
-            } catch {
-                scanStatus = "Hidden scan failed: \(error.localizedDescription)"
             }
-
-            isScanning = false
+        } catch {
+            scanStatus = "Hidden scan failed: \(error.localizedDescription)"
         }
+        isScanning = false
     }
 
     // MARK: - App Scan
 
     func scanApps() {
         Task {
-            isScanning = true
-            scanStatus = "Inspecting applications..."
+            await performAppsScan()
+        }
+    }
 
-            do {
-                let data = try await runCLI(args: ["scan", "apps"])
+    private func performAppsScan() async {
+        isScanning = true
+        scanStatus = "Inspecting applications..."
+        let previousCategories = Set(appIssues.map(\.category))
+        findings.removeAll { previousCategories.contains($0.category) }
 
-                if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+        do {
+            let data = try await runCLI(args: ["scan", "apps"])
+
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
                     appCount = json["total_apps"] as? Int ?? 0
 
                     if let issues = json["issues"] as? [[String: Any]] {
@@ -418,13 +451,11 @@ class SeKretSauceViewModel: ObservableObject {
                             ))
                         }
                     }
-                }
-            } catch {
-                scanStatus = "App scan failed: \(error.localizedDescription)"
             }
-
-            isScanning = false
+        } catch {
+            scanStatus = "App scan failed: \(error.localizedDescription)"
         }
+        isScanning = false
     }
 
     // MARK: - Breach Check
@@ -471,6 +502,20 @@ class SeKretSauceViewModel: ObservableObject {
             }
 
             isScanning = false
+        }
+    }
+}
+
+private enum CLIError: LocalizedError {
+    case failed(status: Int32, message: String)
+    case notFound
+
+    var errorDescription: String? {
+        switch self {
+        case let .failed(status, message):
+            return "CLI exited with status \(status): \(message)"
+        case .notFound:
+            return "SeKretSauce CLI not found. Install it or set the CLI path in preferences."
         }
     }
 }

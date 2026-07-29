@@ -15,6 +15,7 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "SeKretSauceInstaller",
+            dependencies: ["InstallerSupport"],
             path: "SeKretSauceInstaller",
             exclude: ["Assets.xcassets"],
             resources: [
@@ -23,6 +24,15 @@ let package = Package(
             swiftSettings: [
                 .enableExperimentalFeature("StrictConcurrency")
             ]
-        )
+        ),
+        .target(
+            name: "InstallerSupport",
+            path: "Sources/InstallerSupport"
+        ),
+        .testTarget(
+            name: "InstallerSupportTests",
+            dependencies: ["InstallerSupport"],
+            path: "Tests/InstallerSupportTests"
+        ),
     ]
 )

@@ -11,6 +11,10 @@ let package = Package(
             name: "com.rampart.FirewallHelper",
             targets: ["FirewallHelper"]
         ),
+        .library(
+            name: "FirewallHelperCore",
+            targets: ["FirewallHelperCore"]
+        ),
     ],
     dependencies: [
         .package(path: "../FirewallKit"),
@@ -18,8 +22,21 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "FirewallHelper",
-            dependencies: ["FirewallKit"],
+            dependencies: ["FirewallKit", "FirewallHelperCore"],
             path: "Sources/FirewallHelper"
+        ),
+        .target(
+            name: "FirewallHelperCore",
+            dependencies: [],
+            path: "Sources/FirewallHelperCore",
+            linkerSettings: [
+                .linkedFramework("Security")
+            ]
+        ),
+        .testTarget(
+            name: "FirewallHelperCoreTests",
+            dependencies: ["FirewallHelperCore"],
+            path: "Tests/FirewallHelperCoreTests"
         ),
     ]
 )

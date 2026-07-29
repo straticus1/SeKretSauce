@@ -18,5 +18,10 @@ let package = Package(
             dependencies: [],
             path: "Sources/FirewallKit"
         ),
+        .testTarget(
+            name: "FirewallKitTests",
+            dependencies: ["FirewallKit"],
+            path: "Tests/FirewallKitTests"
+        ),
     ]
 )

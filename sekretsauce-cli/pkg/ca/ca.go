@@ -3,6 +3,7 @@ package ca
 import (
 	"bufio"
 	"bytes"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
@@ -17,36 +18,35 @@ import (
 
 // ScanOptions configures the CA scan
 type ScanOptions struct {
-	IncludeSystem     bool // Include system CA store
-	IncludeUser       bool // Include user-installed CAs
-	CheckRevocation   bool // Check certificate revocation status
-	IncludeExpired    bool // Include expired certificates
+	IncludeSystem  bool // Include system CA store
+	IncludeUser    bool // Include user-installed CAs
+	IncludeExpired bool // Include expired certificates
 }
 
 // ScanResult contains CA certificate scan results
 type ScanResult struct {
-	SystemCAs       []CACertificate   `json:"system_cas,omitempty"`
-	UserCAs         []CACertificate   `json:"user_cas,omitempty"`
-	SuspiciousCAs   []SuspiciousCA    `json:"suspicious_cas,omitempty"`
-	ExpiredCAs      []CACertificate   `json:"expired_cas,omitempty"`
-	Summary         CASummary         `json:"summary"`
-	Platform        string            `json:"platform"`
+	SystemCAs     []CACertificate `json:"system_cas,omitempty"`
+	UserCAs       []CACertificate `json:"user_cas,omitempty"`
+	SuspiciousCAs []SuspiciousCA  `json:"suspicious_cas,omitempty"`
+	ExpiredCAs    []CACertificate `json:"expired_cas,omitempty"`
+	Summary       CASummary       `json:"summary"`
+	Platform      string          `json:"platform"`
 }
 
 // CACertificate represents a certificate authority certificate
 type CACertificate struct {
-	Subject         string    `json:"subject"`
-	Issuer          string    `json:"issuer"`
-	SerialNumber    string    `json:"serial_number"`
-	NotBefore       time.Time `json:"not_before"`
-	NotAfter        time.Time `json:"not_after"`
-	Fingerprint     string    `json:"fingerprint"`
-	SignatureAlg    string    `json:"signature_algorithm"`
-	KeyUsage        []string  `json:"key_usage,omitempty"`
-	IsCA            bool      `json:"is_ca"`
-	Source          string    `json:"source"` // system, user, keychain name
-	TrustSettings   []string  `json:"trust_settings,omitempty"`
-	Path            string    `json:"path,omitempty"`
+	Subject       string    `json:"subject"`
+	Issuer        string    `json:"issuer"`
+	SerialNumber  string    `json:"serial_number"`
+	NotBefore     time.Time `json:"not_before"`
+	NotAfter      time.Time `json:"not_after"`
+	Fingerprint   string    `json:"fingerprint"`
+	SignatureAlg  string    `json:"signature_algorithm"`
+	KeyUsage      []string  `json:"key_usage,omitempty"`
+	IsCA          bool      `json:"is_ca"`
+	Source        string    `json:"source"` // system, user, keychain name
+	TrustSettings []string  `json:"trust_settings,omitempty"`
+	Path          string    `json:"path,omitempty"`
 }
 
 // SuspiciousCA represents a potentially suspicious CA certificate
@@ -59,20 +59,20 @@ type SuspiciousCA struct {
 
 // CASummary provides overview statistics
 type CASummary struct {
-	TotalCAs          int `json:"total_cas"`
-	SystemCAs         int `json:"system_cas"`
-	UserInstalledCAs  int `json:"user_installed_cas"`
-	ExpiredCAs        int `json:"expired_cas"`
-	SuspiciousCAs     int `json:"suspicious_cas"`
-	SelfSignedCAs     int `json:"self_signed_cas"`
-	WeakAlgorithms    int `json:"weak_algorithms"`
+	TotalCAs         int `json:"total_cas"`
+	SystemCAs        int `json:"system_cas"`
+	UserInstalledCAs int `json:"user_installed_cas"`
+	ExpiredCAs       int `json:"expired_cas"`
+	SuspiciousCAs    int `json:"suspicious_cas"`
+	SelfSignedCAs    int `json:"self_signed_cas"`
+	WeakAlgorithms   int `json:"weak_algorithms"`
 }
 
 // Known suspicious CA indicators
 var suspiciousIndicators = []struct {
-	Pattern     string
-	Reason      string
-	Severity    string
+	Pattern  string
+	Reason   string
+	Severity string
 }{
 	// Known malware/adware CAs
 	{Pattern: "Superfish", Reason: "Known adware CA (Superfish)", Severity: "critical"},
@@ -239,7 +239,7 @@ func extractMacOSCertificates(keychainPath string, source string) ([]CACertifica
 			SerialNumber: x509Cert.SerialNumber.String(),
 			NotBefore:    x509Cert.NotBefore,
 			NotAfter:     x509Cert.NotAfter,
-			Fingerprint:  fmt.Sprintf("%x", x509Cert.Raw[:16]),
+			Fingerprint:  certificateFingerprint(x509Cert.Raw),
 			SignatureAlg: x509Cert.SignatureAlgorithm.String(),
 			IsCA:         x509Cert.IsCA,
 			Source:       source,
@@ -255,6 +255,22 @@ func extractMacOSCertificates(keychainPath string, source string) ([]CACertifica
 	}
 
 	return certs, nil
+}
+
+func certificateFingerprint(der []byte) string {
+	sum := sha256.Sum256(der)
+	return strings.ToUpper(hexWithColons(sum[:]))
+}
+
+func hexWithColons(value []byte) string {
+	var builder strings.Builder
+	for index, item := range value {
+		if index > 0 {
+			builder.WriteByte(':')
+		}
+		fmt.Fprintf(&builder, "%02X", item)
+	}
+	return builder.String()
 }
 
 // scanLinuxCertificates scans Linux CA certificate stores

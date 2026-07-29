@@ -20,11 +20,11 @@ type ScanOptions struct {
 
 // ScanResult contains secrets scan results
 type ScanResult struct {
-	TotalFilesScanned int             `json:"total_files_scanned"`
-	SecretsFound      []Secret        `json:"secrets_found,omitempty"`
-	PasswordFiles     []PasswordFile  `json:"password_files,omitempty"`
-	EnvFiles          []EnvFile       `json:"env_files,omitempty"`
-	Summary           SecretsSummary  `json:"summary"`
+	TotalFilesScanned int            `json:"total_files_scanned"`
+	SecretsFound      []Secret       `json:"secrets_found,omitempty"`
+	PasswordFiles     []PasswordFile `json:"password_files,omitempty"`
+	EnvFiles          []EnvFile      `json:"env_files,omitempty"`
+	Summary           SecretsSummary `json:"summary"`
 }
 
 // Secret represents a detected secret
@@ -32,8 +32,8 @@ type Secret struct {
 	Type       string `json:"type"`
 	File       string `json:"file"`
 	Line       int    `json:"line"`
-	Match      string `json:"match"`      // Redacted match
-	Context    string `json:"context"`    // Surrounding context (redacted)
+	Match      string `json:"match"`   // Redacted match
+	Context    string `json:"context"` // Surrounding context (redacted)
 	Severity   string `json:"severity"`
 	Confidence string `json:"confidence"` // high, medium, low
 }
@@ -49,19 +49,19 @@ type PasswordFile struct {
 
 // EnvFile represents a .env or similar configuration file
 type EnvFile struct {
-	Path      string   `json:"path"`
-	Variables []string `json:"variables"` // Variable names only, not values
-	HasSecrets bool    `json:"has_secrets"`
+	Path       string   `json:"path"`
+	Variables  []string `json:"variables"` // Variable names only, not values
+	HasSecrets bool     `json:"has_secrets"`
 }
 
 // SecretsSummary provides overview statistics
 type SecretsSummary struct {
-	APIKeys         int `json:"api_keys"`
-	PrivateKeys     int `json:"private_keys"`
-	Passwords       int `json:"passwords"`
-	Tokens          int `json:"tokens"`
+	APIKeys           int `json:"api_keys"`
+	PrivateKeys       int `json:"private_keys"`
+	Passwords         int `json:"passwords"`
+	Tokens            int `json:"tokens"`
 	ConnectionStrings int `json:"connection_strings"`
-	CriticalFindings int `json:"critical_findings"`
+	CriticalFindings  int `json:"critical_findings"`
 }
 
 // SecretPattern defines a pattern to search for
@@ -109,11 +109,11 @@ var secretPatterns = []SecretPattern{
 	{Name: "Mailchimp API Key", Pattern: regexp.MustCompile(`[0-9a-f]{32}-us[0-9]{1,2}`), Type: "mailchimp_api", Severity: "high", Confidence: "medium"},
 
 	// Private Keys
-	{Name: "RSA Private Key", Pattern: regexp.MustCompile(`-----BEGIN RSA PRIVATE KEY-----`), Type: "rsa_private_key", Severity: "critical", Confidence: "high"},
-	{Name: "OpenSSH Private Key", Pattern: regexp.MustCompile(`-----BEGIN OPENSSH PRIVATE KEY-----`), Type: "openssh_private_key", Severity: "critical", Confidence: "high"},
-	{Name: "DSA Private Key", Pattern: regexp.MustCompile(`-----BEGIN DSA PRIVATE KEY-----`), Type: "dsa_private_key", Severity: "critical", Confidence: "high"},
-	{Name: "EC Private Key", Pattern: regexp.MustCompile(`-----BEGIN EC PRIVATE KEY-----`), Type: "ec_private_key", Severity: "critical", Confidence: "high"},
-	{Name: "PGP Private Key", Pattern: regexp.MustCompile(`-----BEGIN PGP PRIVATE KEY BLOCK-----`), Type: "pgp_private_key", Severity: "critical", Confidence: "high"},
+	{Name: "RSA Private Key", Pattern: regexp.MustCompile(`-----BEGIN RSA PRIVATE KEY-----`), Type: "rsa_private_key", Severity: "critical", Confidence: "high"},             // gitleaks:allow -- detector signature, not key material
+	{Name: "OpenSSH Private Key", Pattern: regexp.MustCompile(`-----BEGIN OPENSSH PRIVATE KEY-----`), Type: "openssh_private_key", Severity: "critical", Confidence: "high"}, // gitleaks:allow -- detector signature, not key material
+	{Name: "DSA Private Key", Pattern: regexp.MustCompile(`-----BEGIN DSA PRIVATE KEY-----`), Type: "dsa_private_key", Severity: "critical", Confidence: "high"},             // gitleaks:allow -- detector signature, not key material
+	{Name: "EC Private Key", Pattern: regexp.MustCompile(`-----BEGIN EC PRIVATE KEY-----`), Type: "ec_private_key", Severity: "critical", Confidence: "high"},                // gitleaks:allow -- detector signature, not key material
+	{Name: "PGP Private Key", Pattern: regexp.MustCompile(`-----BEGIN PGP PRIVATE KEY BLOCK-----`), Type: "pgp_private_key", Severity: "critical", Confidence: "high"},       // gitleaks:allow -- detector signature, not key material
 
 	// Database Connection Strings
 	{Name: "PostgreSQL URI", Pattern: regexp.MustCompile(`postgres(ql)?://[^:]+:[^@]+@[^/]+/[^\s]+`), Type: "postgres_uri", Severity: "critical", Confidence: "high"},
@@ -254,6 +254,9 @@ func Scan(opts ScanOptions) (*ScanResult, error) {
 				}
 				return nil
 			}
+			if info.Mode()&os.ModeSymlink != 0 {
+				return nil
+			}
 
 			// Skip files that are too large
 			if info.Size() > opts.MaxFileSize {
@@ -316,6 +319,7 @@ func scanFile(filePath string, maxSize int64) ([]Secret, *PasswordFile, *EnvFile
 	defer file.Close()
 
 	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	lineNum := 0
 
 	for scanner.Scan() {
@@ -362,6 +366,7 @@ func parseEnvFile(filePath string) *EnvFile {
 	}
 
 	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || strings.HasPrefix(line, "#") {

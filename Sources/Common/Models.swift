@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - Tunnel Detection Models
 
-public enum TunnelType: String, Codable, CaseIterable {
+public enum TunnelType: String, Codable, CaseIterable, Sendable {
     case sshTunnel = "SSH Tunnel"
     case cloudflareTunnel = "Cloudflare Tunnel"
     case ngrok = "ngrok"
@@ -16,7 +16,7 @@ public enum TunnelType: String, Codable, CaseIterable {
     case unknown = "Unknown Tunnel"
 }
 
-public enum AlertSeverity: String, Codable, Comparable {
+public enum AlertSeverity: String, Codable, Comparable, Sendable {
     case info = "INFO"
     case low = "LOW"
     case medium = "MEDIUM"
@@ -31,7 +31,7 @@ public enum AlertSeverity: String, Codable, Comparable {
     }
 }
 
-public struct TunnelAlert: Codable, Identifiable {
+public struct TunnelAlert: Codable, Identifiable, Sendable {
     public let id: UUID
     public let type: TunnelType
     public let evidence: String
@@ -59,7 +59,7 @@ public struct TunnelAlert: Codable, Identifiable {
     }
 }
 
-public struct ProcessMetadata: Codable {
+public struct ProcessMetadata: Codable, Sendable {
     public let pid: Int32
     public let ppid: Int32
     public let path: String
@@ -77,7 +77,7 @@ public struct ProcessMetadata: Codable {
     }
 }
 
-public struct NetworkMetadata: Codable {
+public struct NetworkMetadata: Codable, Sendable {
     public let sourceIP: String?
     public let sourcePort: UInt16?
     public let destinationIP: String?
@@ -105,7 +105,7 @@ public struct NetworkMetadata: Codable {
     }
 }
 
-public enum NetworkProtocol: String, Codable {
+public enum NetworkProtocol: String, Codable, Sendable {
     case tcp = "TCP"
     case udp = "UDP"
     case icmp = "ICMP"
@@ -114,7 +114,7 @@ public enum NetworkProtocol: String, Codable {
 
 // MARK: - SSH Session Models
 
-public struct SSHSession: Codable, Identifiable {
+public struct SSHSession: Codable, Identifiable, Sendable {
     public let id: UUID
     public let startTime: Date
     public var endTime: Date?
@@ -154,7 +154,7 @@ public struct SSHSession: Codable, Identifiable {
     }
 }
 
-public struct SSHTunnelFlag: Codable {
+public struct SSHTunnelFlag: Codable, Sendable {
     public let type: SSHTunnelType
     public let bindAddress: String?
     public let bindPort: UInt16
@@ -170,7 +170,7 @@ public struct SSHTunnelFlag: Codable {
     }
 }
 
-public enum SSHTunnelType: String, Codable {
+public enum SSHTunnelType: String, Codable, Sendable {
     case localForward = "Local Forward (-L)"
     case remoteForward = "Remote Forward (-R)"
     case dynamicSOCKS = "Dynamic SOCKS (-D)"
@@ -179,7 +179,7 @@ public enum SSHTunnelType: String, Codable {
 
 // MARK: - DNS Models
 
-public struct DNSQuery: Codable {
+public struct DNSQuery: Codable, Sendable {
     public let id: UUID
     public let timestamp: Date
     public let queryName: String
@@ -213,7 +213,7 @@ public struct DNSQuery: Codable {
     }
 }
 
-public enum DNSQueryType: UInt16, Codable {
+public enum DNSQueryType: UInt16, Codable, Sendable {
     case a = 1
     case ns = 2
     case cname = 5
@@ -247,7 +247,7 @@ public enum DNSQueryType: UInt16, Codable {
 
 // MARK: - Audit Log Models
 
-public struct AuditEvent: Codable, Identifiable {
+public struct AuditEvent: Codable, Identifiable, Sendable {
     public let id: UUID
     public let timestamp: Date
     public let eventType: AuditEventType
@@ -275,11 +275,12 @@ public struct AuditEvent: Codable, Identifiable {
     }
 }
 
-public enum AuditEventType: String, Codable {
+public enum AuditEventType: String, Codable, Sendable {
     case systemStart = "SYSTEM_START"
     case systemStop = "SYSTEM_STOP"
     case authSuccess = "AUTH_SUCCESS"
     case authFailure = "AUTH_FAILURE"
+    case authLogout = "AUTH_LOGOUT"
     case sshSessionStart = "SSH_SESSION_START"
     case sshSessionEnd = "SSH_SESSION_END"
     case sshTunnelDetected = "SSH_TUNNEL_DETECTED"
@@ -287,6 +288,9 @@ public enum AuditEventType: String, Codable {
     case dnsQuery = "DNS_QUERY"
     case dnsBlocked = "DNS_BLOCKED"
     case processExec = "PROCESS_EXEC"
+    case malwareDetected = "MALWARE_DETECTED"
+    case ransomwareDetected = "RANSOMWARE_DETECTED"
+    case processSuspended = "PROCESS_SUSPENDED"
     case networkConnection = "NETWORK_CONNECTION"
     case configChange = "CONFIG_CHANGE"
     case error = "ERROR"
@@ -294,7 +298,7 @@ public enum AuditEventType: String, Codable {
 
 // MARK: - Configuration Models
 
-public struct AgentConfiguration: Codable {
+public struct AgentConfiguration: Codable, Sendable {
     public var serverURL: String
     public var apiKey: String?
     public var logLevel: LogLevel
@@ -311,8 +315,8 @@ public struct AgentConfiguration: Codable {
         serverURL: String = "",
         apiKey: String? = nil,
         logLevel: LogLevel = .info,
-        enableSSHRecording: Bool = true,
-        enableDNSMonitoring: Bool = true,
+        enableSSHRecording: Bool = false,
+        enableDNSMonitoring: Bool = false,
         enableTunnelDetection: Bool = true,
         enableProcessMonitoring: Bool = true,
         blockedDomains: [String] = [],
@@ -334,7 +338,7 @@ public struct AgentConfiguration: Codable {
     }
 }
 
-public enum LogLevel: String, Codable, Comparable {
+public enum LogLevel: String, Codable, Comparable, Sendable {
     case debug = "DEBUG"
     case info = "INFO"
     case warning = "WARNING"
@@ -350,7 +354,7 @@ public enum LogLevel: String, Codable, Comparable {
 
 // MARK: - Tunnel Indicators
 
-public struct TunnelIndicator {
+public struct TunnelIndicator: Sendable {
     public let name: String
     public let tunnelType: TunnelType
     public let dnsPatterns: [String]
@@ -377,7 +381,7 @@ public struct TunnelIndicator {
 
 // MARK: - Known Tunnel Services Database
 
-public struct TunnelDatabase {
+public struct TunnelDatabase: Sendable {
     public static let indicators: [TunnelIndicator] = [
         TunnelIndicator(
             name: "Cloudflare Tunnel",

@@ -2,6 +2,7 @@
 // Represents a single pf rule with parsing and generation
 
 import Foundation
+import Darwin
 
 public struct PFRule: Identifiable, Equatable {
     public let id: UUID
@@ -190,6 +191,84 @@ extension PFRule {
 
 extension PFRule {
 
+    public func validate() throws {
+        if let interface {
+            guard interface.range(
+                of: #"^[A-Za-z0-9][A-Za-z0-9._:-]{0,31}$"#,
+                options: .regularExpression
+            ) != nil else {
+                throw PFRuleValidationError.invalidInterface
+            }
+        }
+
+        try Self.validate(address: source)
+        try Self.validate(address: destination)
+
+        if let port {
+            switch port {
+            case .single:
+                break
+            case .range(let start, let end):
+                guard start <= end else {
+                    throw PFRuleValidationError.invalidPort
+                }
+            case .list(let ports):
+                guard !ports.isEmpty else {
+                    throw PFRuleValidationError.invalidPort
+                }
+            }
+        }
+
+        if let flags {
+            guard networkProtocol == .tcp,
+                  flags.range(
+                    of: #"^[FSRPAUEW]+(?:/[FSRPAUEW]+)?$"#,
+                    options: [.regularExpression, .caseInsensitive]
+                  ) != nil else {
+                throw PFRuleValidationError.invalidFlags
+            }
+        }
+    }
+
+    private static func validate(address: Address) throws {
+        switch address {
+        case .any:
+            return
+        case .host(let address):
+            guard address.containsNoControlCharacters, ipFamily(address) != nil else {
+                throw PFRuleValidationError.invalidAddress
+            }
+        case .network(let address, let prefix):
+            guard address.containsNoControlCharacters,
+                  let family = ipFamily(address),
+                  (family == AF_INET && (0...32).contains(prefix))
+                    || (family == AF_INET6 && (0...128).contains(prefix)) else {
+                throw PFRuleValidationError.invalidNetwork
+            }
+        case .table(let name):
+            guard name.range(
+                of: #"^[A-Za-z_][A-Za-z0-9_-]{0,62}$"#,
+                options: .regularExpression
+            ) != nil else {
+                throw PFRuleValidationError.invalidTable
+            }
+        }
+    }
+
+    private static func ipFamily(_ address: String) -> Int32? {
+        var ipv4 = in_addr()
+        if address.withCString({ inet_pton(AF_INET, $0, &ipv4) }) == 1 {
+            return AF_INET
+        }
+
+        var ipv6 = in6_addr()
+        if address.withCString({ inet_pton(AF_INET6, $0, &ipv6) }) == 1 {
+            return AF_INET6
+        }
+
+        return nil
+    }
+
     public func toPFSyntax() -> String {
         var parts: [String] = []
 
@@ -247,6 +326,38 @@ extension PFRule {
         let portStr = port?.displayName ?? "*"
 
         return "\(actionEmoji) \(dirArrow) \(proto) \(source.displayName) → \(destination.displayName):\(portStr)"
+    }
+}
+
+private extension String {
+    var containsNoControlCharacters: Bool {
+        !unicodeScalars.contains { CharacterSet.controlCharacters.contains($0) }
+    }
+}
+
+public enum PFRuleValidationError: Error, LocalizedError {
+    case invalidInterface
+    case invalidAddress
+    case invalidNetwork
+    case invalidTable
+    case invalidPort
+    case invalidFlags
+
+    public var errorDescription: String? {
+        switch self {
+        case .invalidInterface:
+            return "Invalid network interface"
+        case .invalidAddress:
+            return "PF host addresses must be valid IPv4 or IPv6 addresses"
+        case .invalidNetwork:
+            return "PF networks must contain a valid address and CIDR prefix"
+        case .invalidTable:
+            return "Invalid PF table name"
+        case .invalidPort:
+            return "Invalid PF port specification"
+        case .invalidFlags:
+            return "Invalid TCP flags"
+        }
     }
 }
 

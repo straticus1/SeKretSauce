@@ -1,11 +1,14 @@
 import Foundation
 import EndpointSecurity
 import os.log
+import Common
+import TunnelDetection
+import ThreatDetection
 
 /// Process Monitor using Endpoint Security Framework
 /// Monitors process execution, file access, and network activity
 /// Note: Requires com.apple.developer.endpoint-security.client entitlement
-public final class ProcessMonitor {
+public final class ProcessMonitor: @unchecked Sendable {
 
     public static let shared = ProcessMonitor()
 
@@ -13,22 +16,26 @@ public final class ProcessMonitor {
     private let auditLogger = AuditLogger.shared
     private let tunnelDetector = TunnelDetectionEngine.shared
     private let cloudflareDetector = CloudflareTunnelDetector.shared
+    private let threatDetector = BehavioralThreatDetector()
 
     private var client: OpaquePointer?
     private var isRunning = false
+    private let configurationLock = NSLock()
+    private var tunnelDetectionEnabled = true
 
     private init() {}
 
     // MARK: - Lifecycle
 
     /// Start the process monitor
-    public func start() throws {
+    public func start(tunnelDetectionEnabled: Bool = true) throws {
         guard !isRunning else {
             os_log(.info, log: log, "Process monitor already running")
             return
         }
 
         os_log(.info, log: log, "Starting process monitor...")
+        setTunnelDetectionEnabled(tunnelDetectionEnabled)
 
         var newClient: OpaquePointer?
 
@@ -101,6 +108,12 @@ public final class ProcessMonitor {
         )
     }
 
+    public func setTunnelDetectionEnabled(_ enabled: Bool) {
+        configurationLock.lock()
+        tunnelDetectionEnabled = enabled
+        configurationLock.unlock()
+    }
+
     /// Stop the process monitor
     public func stop() {
         guard isRunning, let client = client else { return }
@@ -142,6 +155,9 @@ public final class ProcessMonitor {
         case ES_EVENT_TYPE_NOTIFY_WRITE:
             handleWriteEvent(message)
 
+        case ES_EVENT_TYPE_NOTIFY_RENAME:
+            handleRenameEvent(message)
+
         case ES_EVENT_TYPE_NOTIFY_KEXTLOAD:
             handleKextLoadEvent(message)
 
@@ -153,7 +169,7 @@ public final class ProcessMonitor {
     // MARK: - Exec Event
 
     private func handleExecEvent(_ message: UnsafePointer<es_message_t>) {
-        let event = message.pointee.event.exec
+        var event = message.pointee.event.exec
         let process = message.pointee.process.pointee
 
         // Get process details
@@ -166,9 +182,7 @@ public final class ProcessMonitor {
         var arguments: [String] = []
         let argCount = es_exec_arg_count(&event)
         for i in 0..<argCount {
-            if let arg = es_exec_arg(&event, i) {
-                arguments.append(getString(from: arg.pointee))
-            }
+            arguments.append(getString(from: es_exec_arg(&event, i)))
         }
 
         // Create process metadata
@@ -180,14 +194,27 @@ public final class ProcessMonitor {
             user: user
         )
 
-        // Check for tunnel processes
-        checkForTunnelProcess(processInfo)
+        configurationLock.lock()
+        let shouldDetectTunnels = tunnelDetectionEnabled
+        configurationLock.unlock()
+        if shouldDetectTunnels {
+            checkForTunnelProcess(processInfo)
+        }
+        evaluateProcessThreat(processInfo, process: process)
 
         // Log the execution
         auditLogger.logProcessExec(processInfo)
     }
 
     private func checkForTunnelProcess(_ process: ProcessMetadata) {
+        let redactedProcess = ProcessMetadata(
+            pid: process.pid,
+            ppid: process.ppid,
+            path: process.path,
+            arguments: SensitiveDataRedactor.redact(arguments: process.arguments),
+            user: process.user,
+            timestamp: process.timestamp
+        )
         // Check with main tunnel detector
         let result = tunnelDetector.analyzeProcess(
             path: process.path,
@@ -197,13 +224,13 @@ public final class ProcessMonitor {
         )
 
         if let alert = result.alert {
-            var alertWithProcess = TunnelAlert(
+            let alertWithProcess = TunnelAlert(
                 id: alert.id,
                 type: alert.type,
                 evidence: alert.evidence,
                 severity: alert.severity,
                 timestamp: alert.timestamp,
-                processInfo: process,
+                processInfo: redactedProcess,
                 networkInfo: alert.networkInfo
             )
             auditLogger.logTunnelAlert(alertWithProcess)
@@ -214,13 +241,13 @@ public final class ProcessMonitor {
             path: process.path,
             arguments: process.arguments
         ) {
-            var alertWithProcess = TunnelAlert(
+            let alertWithProcess = TunnelAlert(
                 id: cfAlert.id,
                 type: cfAlert.type,
                 evidence: cfAlert.evidence,
                 severity: cfAlert.severity,
                 timestamp: cfAlert.timestamp,
-                processInfo: process,
+                processInfo: redactedProcess,
                 networkInfo: cfAlert.networkInfo
             )
             auditLogger.logTunnelAlert(alertWithProcess)
@@ -237,7 +264,8 @@ public final class ProcessMonitor {
     // MARK: - Exit Event
 
     private func handleExitEvent(_ message: UnsafePointer<es_message_t>) {
-        // Track process exits for session recording correlation
+        let pid = audit_token_to_pid(message.pointee.process.pointee.audit_token)
+        threatDetector.processExited(pid: pid)
     }
 
     // MARK: - File Events
@@ -256,7 +284,32 @@ public final class ProcessMonitor {
     }
 
     private func handleWriteEvent(_ message: UnsafePointer<es_message_t>) {
-        // Monitor writes to sensitive files
+        let event = message.pointee.event.write
+        let path = getString(from: event.target.pointee.path)
+        evaluateFileThreat(path: path, kind: .write, message: message)
+    }
+
+    private func handleRenameEvent(_ message: UnsafePointer<es_message_t>) {
+        let event = message.pointee.event.rename
+        let sourcePath = getString(from: event.source.pointee.path)
+        evaluateFileThreat(path: sourcePath, kind: .rename, message: message)
+
+        let destinationPath: String?
+        switch event.destination_type {
+        case ES_DESTINATION_TYPE_EXISTING_FILE:
+            destinationPath = getString(from: event.destination.existing_file.pointee.path)
+        case ES_DESTINATION_TYPE_NEW_PATH:
+            let directory = getString(from: event.destination.new_path.dir.pointee.path)
+            let filename = getString(from: event.destination.new_path.filename)
+            destinationPath = URL(fileURLWithPath: directory)
+                .appendingPathComponent(filename, isDirectory: false)
+                .path
+        default:
+            destinationPath = nil
+        }
+        if let destinationPath {
+            evaluateFileThreat(path: destinationPath, kind: .rename, message: message)
+        }
     }
 
     private func checkSensitiveFileAccess(path: String, message: UnsafePointer<es_message_t>) {
@@ -311,10 +364,14 @@ public final class ProcessMonitor {
     // MARK: - Helpers
 
     private func getString(from token: es_string_token_t) -> String {
-        if let data = token.data {
-            return String(cString: data)
+        guard let data = token.data, token.length > 0 else {
+            return ""
         }
-        return ""
+        let bytes = UnsafeRawPointer(data).assumingMemoryBound(to: UInt8.self)
+        return String(
+            decoding: UnsafeBufferPointer(start: bytes, count: Int(token.length)),
+            as: UTF8.self
+        )
     }
 
     private func getUsername(uid: uid_t) -> String {
@@ -322,6 +379,104 @@ public final class ProcessMonitor {
             return String(cString: pwd.pointee.pw_name)
         }
         return String(uid)
+    }
+
+    private func evaluateProcessThreat(
+        _ metadata: ProcessMetadata,
+        process: es_process_t
+    ) {
+        let verdict = threatDetector.observeProcess(
+            ProcessObservation(
+                pid: metadata.pid,
+                path: metadata.path,
+                arguments: metadata.arguments,
+                isPlatformBinary: process.is_platform_binary,
+                isCodeSigned: (process.codesigning_flags & 0x0000_0001) != 0
+                    && (process.codesigning_flags & 0x2000_0000) != 0
+            )
+        )
+        handleThreatVerdict(verdict, pid: metadata.pid, processPath: metadata.path)
+    }
+
+    private func evaluateFileThreat(
+        path: String,
+        kind: FileMutationKind,
+        message: UnsafePointer<es_message_t>
+    ) {
+        let process = message.pointee.process.pointee
+        let pid = audit_token_to_pid(process.audit_token)
+        let processPath = getString(from: process.executable.pointee.path)
+        let verdict = threatDetector.observeFileMutation(
+            FileMutationObservation(
+                pid: pid,
+                processPath: processPath,
+                targetPath: path,
+                kind: kind
+            )
+        )
+        handleThreatVerdict(
+            verdict,
+            pid: pid,
+            processPath: processPath,
+            targetPath: path
+        )
+    }
+
+    private func handleThreatVerdict(
+        _ verdict: ThreatVerdict,
+        pid: Int32,
+        processPath: String,
+        targetPath: String? = nil
+    ) {
+        guard verdict.action != .allow else { return }
+
+        var metadata = [
+            "pid": String(pid),
+            "process": processPath,
+            "score": String(verdict.score),
+            "reasons": verdict.reasons.joined(separator: "; ")
+        ]
+        if let targetPath {
+            metadata["target_path"] = targetPath
+        }
+
+        auditLogger.log(
+            eventType: verdict.reasons.contains(where: {
+                $0.contains("ransomware") || $0.contains("rapidly modified")
+            })
+                ? .ransomwareDetected
+                : .malwareDetected,
+            severity: verdict.action == .suspend ? .critical : .high,
+            source: "BehavioralThreatDetector",
+            message: "Suspicious behavior detected for \(processPath)",
+            metadata: metadata
+        )
+
+        guard verdict.action == .suspend,
+              pid > 1,
+              pid != getpid(),
+              !processPath.hasPrefix("/System/"),
+              !processPath.hasPrefix("/usr/libexec/") else {
+            return
+        }
+
+        if kill(pid, SIGSTOP) == 0 {
+            auditLogger.log(
+                eventType: .processSuspended,
+                severity: .critical,
+                source: "RansomwareShield",
+                message: "Suspended a process after high-confidence behavioral detection",
+                metadata: metadata
+            )
+        } else {
+            auditLogger.log(
+                eventType: .error,
+                severity: .high,
+                source: "RansomwareShield",
+                message: "Failed to suspend suspicious process",
+                metadata: metadata.merging(["errno": String(errno)]) { current, _ in current }
+            )
+        }
     }
 }
 

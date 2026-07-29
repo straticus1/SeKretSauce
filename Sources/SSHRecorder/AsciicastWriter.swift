@@ -1,24 +1,43 @@
 import Foundation
+import Darwin
 
 /// Writes SSH session recordings in Asciicast v2 format
 /// Compatible with asciinema player for playback
-public final class AsciicastWriter {
+public final class AsciicastWriter: @unchecked Sendable {
 
     private let fileHandle: FileHandle
     private let startTime: Date
     private let encoder = JSONEncoder()
     private let queue = DispatchQueue(label: "com.sekretsauce.asciicast")
+    private let queueKey = DispatchSpecificKey<UInt8>()
+    private let recordInput: Bool
+    private var isClosed = false
 
     public let filePath: URL
 
     /// Initialize with a file path for the recording
-    public init(filePath: URL, width: Int = 120, height: Int = 40, title: String? = nil, command: String? = nil) throws {
+    public init(
+        filePath: URL,
+        width: Int = 120,
+        height: Int = 40,
+        title: String? = nil,
+        command: String? = nil,
+        recordInput: Bool = false
+    ) throws {
         self.filePath = filePath
         self.startTime = Date()
+        self.recordInput = recordInput
 
-        // Create the file
-        FileManager.default.createFile(atPath: filePath.path, contents: nil)
-        self.fileHandle = try FileHandle(forWritingTo: filePath)
+        let descriptor = open(
+            filePath.path,
+            O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW,
+            0o600
+        )
+        guard descriptor >= 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        self.fileHandle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        self.queue.setSpecific(key: queueKey, value: 1)
 
         // Write header
         let header = AsciicastHeader(
@@ -48,6 +67,9 @@ public final class AsciicastWriter {
 
     /// Write input event (data from user to SSH server)
     public func writeInput(_ data: Data) {
+        guard recordInput else {
+            return
+        }
         queue.async { [weak self] in
             self?.writeEvent(type: "i", data: data)
         }
@@ -56,50 +78,33 @@ public final class AsciicastWriter {
     private func writeEvent(type: String, data: Data) {
         let elapsed = Date().timeIntervalSince(startTime)
 
-        // Convert data to string, escaping control characters
-        let text = escapeForJSON(data)
-
-        // Asciicast v2 event format: [time, type, data]
-        let event = "[\(String(format: "%.6f", elapsed)), \"\(type)\", \(text)]"
-
-        if let eventData = event.data(using: .utf8) {
+        let event: [Any] = [
+            Double(String(format: "%.6f", elapsed)) ?? elapsed,
+            type,
+            String(decoding: data, as: UTF8.self)
+        ]
+        if let eventData = try? JSONSerialization.data(withJSONObject: event) {
             fileHandle.write(eventData)
             fileHandle.write(Data([0x0A])) // newline
         }
     }
 
-    /// Escape binary data for JSON string
-    private func escapeForJSON(_ data: Data) -> String {
-        var result = "\""
-        for byte in data {
-            switch byte {
-            case 0x08: result += "\\b"
-            case 0x09: result += "\\t"
-            case 0x0A: result += "\\n"
-            case 0x0C: result += "\\f"
-            case 0x0D: result += "\\r"
-            case 0x22: result += "\\\""
-            case 0x5C: result += "\\\\"
-            case 0x00...0x1F, 0x7F:
-                result += String(format: "\\u%04x", byte)
-            default:
-                if let char = String(bytes: [byte], encoding: .utf8) {
-                    result += char
-                } else {
-                    result += String(format: "\\u%04x", byte)
-                }
-            }
-        }
-        result += "\""
-        return result
-    }
-
     /// Close the recording file
     public func close() {
-        queue.sync {
-            fileHandle.synchronizeFile()
-            fileHandle.closeFile()
+        if DispatchQueue.getSpecific(key: queueKey) != nil {
+            closeOnQueue()
+        } else {
+            queue.sync {
+                closeOnQueue()
+            }
         }
+    }
+
+    private func closeOnQueue() {
+        guard !isClosed else { return }
+        isClosed = true
+        fileHandle.synchronizeFile()
+        fileHandle.closeFile()
     }
 
     deinit {

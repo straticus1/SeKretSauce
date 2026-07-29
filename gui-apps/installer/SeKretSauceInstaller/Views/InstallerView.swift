@@ -167,9 +167,9 @@ struct WelcomeStepView: View {
                 .padding(.horizontal, 40)
 
             VStack(alignment: .leading, spacing: 12) {
-                FeatureRow(icon: "terminal", text: "SSH session recording & monitoring")
+                FeatureRow(icon: "terminal", text: "Optional SSH output recording & monitoring")
                 FeatureRow(icon: "network", text: "Tunnel detection (Cloudflare, ngrok, etc.)")
-                FeatureRow(icon: "eye", text: "DNS & network traffic visibility")
+                FeatureRow(icon: "waveform.path.ecg", text: "Behavioral malware & ransomware detection")
                 FeatureRow(icon: "doc.text.magnifyingglass", text: "Compliance audit logging")
             }
             .padding(.horizontal, 60)
@@ -259,18 +259,18 @@ struct LicenseStepView: View {
 
         3. DATA COLLECTION
         This software monitors system activity including:
-        - SSH sessions and commands
-        - DNS queries
-        - Network connections
-        - Process execution
+        - Process execution and selected file changes
+        - Tunnel-related process behavior
+        - Optional SSH session output when explicitly enabled
+        - Local security audit events
 
         All data is collected for security monitoring and
         compliance purposes.
 
         4. PRIVACY
-        Data collected by this software may be transmitted to
-        a central server for analysis and storage. By using
-        this software, you consent to this data collection.
+        Data remains local by default. If an administrator
+        explicitly configures a remote HTTPS service, audit
+        events may be transmitted for analysis and storage.
 
         5. WARRANTY DISCLAIMER
         THE SOFTWARE IS PROVIDED "AS IS" WITHOUT WARRANTY OF
@@ -302,85 +302,28 @@ struct CheckboxToggleStyle: ToggleStyle {
 }
 
 struct ConfigurationStepView: View {
-    @EnvironmentObject var installer: InstallerManager
-
     var body: some View {
         VStack(spacing: 20) {
-            Text("Configuration")
+            Text("Protection Setup")
                 .font(.title2)
                 .fontWeight(.semibold)
                 .foregroundColor(.white)
                 .padding(.top, 20)
 
             VStack(alignment: .leading, spacing: 20) {
-                // Server URL
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Server URL (Optional)")
-                        .font(.headline)
-                        .foregroundColor(.white)
-
-                    TextField("https://api.yourcompany.com", text: $installer.serverURL)
-                        .textFieldStyle(DarkTextFieldStyle())
-
-                    Text("Leave empty to run in standalone mode")
-                        .font(.caption)
-                        .foregroundColor(.gray)
-                }
-
-                // API Key
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("API Key (Optional)")
-                        .font(.headline)
-                        .foregroundColor(.white)
-
-                    SecureField("Enter API key", text: $installer.apiKey)
-                        .textFieldStyle(DarkTextFieldStyle())
-
-                    Text("Required only if connecting to a server")
-                        .font(.caption)
-                        .foregroundColor(.gray)
-                }
-
-                Divider()
-                    .background(Color.gray.opacity(0.3))
-
-                // Installation options
-                Text("Installation Options")
+                Text("Local protection is enabled by default")
                     .font(.headline)
                     .foregroundColor(.white)
 
-                Toggle(isOn: $installer.enableSSHRecording) {
-                    VStack(alignment: .leading) {
-                        Text("Enable SSH Recording")
-                            .foregroundColor(.white)
-                        Text("Record all SSH sessions for audit purposes")
-                            .font(.caption)
-                            .foregroundColor(.gray)
-                    }
-                }
-                .toggleStyle(SwitchToggleStyle(tint: Color(hex: "e94560")))
+                FeatureRow(icon: "waveform.path.ecg", text: "Behavioral malware detection")
+                FeatureRow(icon: "lock.doc", text: "Ransomware behavior containment")
+                FeatureRow(icon: "terminal", text: "Process and tunnel behavior monitoring")
+                FeatureRow(icon: "doc.text.magnifyingglass", text: "Private local audit logs")
 
-                Toggle(isOn: $installer.enableTunnelDetection) {
-                    VStack(alignment: .leading) {
-                        Text("Enable Tunnel Detection")
-                            .foregroundColor(.white)
-                        Text("Detect and alert on tunneling activity")
-                            .font(.caption)
-                            .foregroundColor(.gray)
-                    }
-                }
-                .toggleStyle(SwitchToggleStyle(tint: Color(hex: "e94560")))
-
-                Toggle(isOn: $installer.enableDNSMonitoring) {
-                    VStack(alignment: .leading) {
-                        Text("Enable DNS Monitoring")
-                            .foregroundColor(.white)
-                        Text("Monitor DNS queries for security analysis")
-                            .font(.caption)
-                            .foregroundColor(.gray)
-                    }
-                }
-                .toggleStyle(SwitchToggleStyle(tint: Color(hex: "e94560")))
+                Text("Optional server credentials are configured after installation in a root-owned terminal. This keeps API keys out of process arguments, installer logs, and AppleScript.")
+                    .font(.callout)
+                    .foregroundColor(.gray)
+                    .padding(.top, 8)
             }
             .padding(.horizontal, 30)
 
@@ -517,6 +460,11 @@ struct CompleteStepView: View {
                 .foregroundColor(.orange)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 40)
+
+            Text("Optional remote setup:\nsudo '/Library/Application Support/SeKretSauce/sekretsauced' --setup")
+                .font(.system(.caption, design: .monospaced))
+                .foregroundColor(.gray)
+                .multilineTextAlignment(.center)
 
             Spacer()
         }

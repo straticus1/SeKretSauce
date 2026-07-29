@@ -1,9 +1,10 @@
 import Foundation
 import os.log
+import Common
 
 /// File system monitoring for sensitive configuration and credential files
 /// Complements Endpoint Security with targeted file watching
-public final class FileMonitor {
+public final class FileMonitor: @unchecked Sendable {
 
     public static let shared = FileMonitor()
 
@@ -41,6 +42,12 @@ public final class FileMonitor {
 
     /// Start monitoring sensitive paths
     public func start() {
+        queue.sync {
+            startOnQueue()
+        }
+    }
+
+    private func startOnQueue() {
         os_log(.info, log: log, "Starting file monitor...")
 
         // Expand home directory paths
@@ -68,6 +75,12 @@ public final class FileMonitor {
 
     /// Stop all file monitoring
     public func stop() {
+        queue.sync {
+            stopOnQueue()
+        }
+    }
+
+    private func stopOnQueue() {
         os_log(.info, log: log, "Stopping file monitor...")
 
         for (_, source) in monitoredPaths {
@@ -85,9 +98,11 @@ public final class FileMonitor {
 
     /// Add a custom path to monitor
     public func addMonitoredPath(_ path: String) {
-        let expandedPath = (path as NSString).expandingTildeInPath
-        let isDirectory = FileManager.default.fileExists(atPath: expandedPath, isDirectory: nil)
-        monitorPath(expandedPath, isDirectory: isDirectory)
+        queue.sync {
+            let expandedPath = (path as NSString).expandingTildeInPath
+            let isDirectory = FileManager.default.fileExists(atPath: expandedPath, isDirectory: nil)
+            monitorPath(expandedPath, isDirectory: isDirectory)
+        }
     }
 
     // MARK: - Path Monitoring
@@ -108,7 +123,7 @@ public final class FileMonitor {
         // Open file descriptor for monitoring
         let fd = open(path, O_EVTONLY)
         guard fd >= 0 else {
-            os_log(.warning, log: log, "Failed to open path for monitoring: %{public}@", path)
+            os_log(.default, log: log, "Failed to open path for monitoring: %{public}@", path)
             return
         }
 

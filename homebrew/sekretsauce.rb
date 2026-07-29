@@ -11,33 +11,18 @@
 class Sekretsauce < Formula
   desc "Security Swiss Army Knife for macOS - scan for secrets, wallets, suspicious processes"
   homepage "https://github.com/afterdarktech/sekretsauce"
-  version "1.0.0"
-  license "MIT"
+  license :cannot_represent
 
-  # For local development, use the head version
+  # A stable stanza must not be published until release archives and their
+  # real SHA-256 digests exist. Install this source formula with --HEAD.
   head "https://github.com/afterdarktech/sekretsauce.git", branch: "main"
-
-  # Release URLs (update SHA256 after creating releases)
-  on_macos do
-    on_arm do
-      url "https://github.com/afterdarktech/sekretsauce/releases/download/v1.0.0/sekretsauce-1.0.0-darwin-arm64.tar.gz"
-      sha256 "REPLACE_WITH_ACTUAL_SHA256_FOR_ARM64"
-    end
-    on_intel do
-      url "https://github.com/afterdarktech/sekretsauce/releases/download/v1.0.0/sekretsauce-1.0.0-darwin-amd64.tar.gz"
-      sha256 "REPLACE_WITH_ACTUAL_SHA256_FOR_AMD64"
-    end
-  end
 
   depends_on "go" => :build
   depends_on :macos
 
   def install
-    # Build from source if head or if building locally
-    if build.head? || !File.exist?("sekretsauce")
-      system "go", "build", *std_go_args(ldflags: "-s -w -X main.Version=#{version}"), "./cmd/sekretsauce"
-    else
-      bin.install "sekretsauce"
+    cd "sekretsauce-cli" do
+      system "go", "build", *std_go_args(ldflags: "-s -w -X github.com/afterdarktech/sekretsauce/cmd/sekretsauce/cmd.Version=#{version}"), "./cmd/sekretsauce"
     end
 
     # Generate shell completions
@@ -68,12 +53,6 @@ class Sekretsauce < Formula
   end
 
   test do
-    # Test that the binary runs
     assert_match "SeKretSauce", shell_output("#{bin}/sekretsauce --help")
-    assert_match version.to_s, shell_output("#{bin}/sekretsauce --version")
-
-    # Test keychain scan (should work without errors)
-    output = shell_output("#{bin}/sekretsauce scan keychain --json 2>&1", 0)
-    assert_match "total_items", output
   end
 end

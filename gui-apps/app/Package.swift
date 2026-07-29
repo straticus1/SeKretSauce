@@ -14,7 +14,13 @@ let package = Package(
             name: "SeKretSauceGUI",
             path: ".",
             exclude: ["Package.swift"],
-            sources: ["SeKretSauceApp.swift", "ContentView.swift", "ViewModel.swift"]
+            sources: [
+                "SeKretSauceApp.swift",
+                "ContentView.swift",
+                "ViewModel.swift",
+                "PrivacyControls.swift",
+                "RansomwareShieldControls.swift"
+            ]
         )
     ]
 )

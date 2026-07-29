@@ -1,10 +1,10 @@
 import Foundation
+import Common
+import TunnelDetection
 
 /// SSH Wrapper - Intercepts SSH commands for recording and tunnel detection
 /// This binary should be installed as /usr/local/bin/ssh-wrapper
 /// and the original /usr/bin/ssh moved to /usr/bin/ssh.original
-
-let auditLogger = AuditLogger.shared
 
 // MARK: - Main Entry Point
 
@@ -47,7 +47,7 @@ struct SSHWrapper {
             recordAndExecute(session: session, parsed: parsed)
         } else {
             // Just log and execute
-            auditLogger.logSSHSession(session, started: true)
+            AuditLogger.shared.logSSHSession(session, started: true)
             executeRealSSH(args: Array(args.dropFirst()))
         }
     }
@@ -65,7 +65,7 @@ func handleTunnelDetection(_ parsed: SSHArgumentParser.ParsedSSHCommand) {
                 pid: getpid(),
                 ppid: getppid(),
                 path: CommandLine.arguments[0],
-                arguments: CommandLine.arguments,
+                arguments: SensitiveDataRedactor.redact(arguments: CommandLine.arguments),
                 user: ProcessInfo.processInfo.environment["USER"] ?? "unknown"
             ),
             networkInfo: NetworkMetadata(
@@ -75,7 +75,7 @@ func handleTunnelDetection(_ parsed: SSHArgumentParser.ParsedSSHCommand) {
             )
         )
 
-        auditLogger.logTunnelAlert(alert)
+        AuditLogger.shared.logTunnelAlert(alert)
     }
 
     // Check for suspicious tunnel services
@@ -96,7 +96,7 @@ func handleTunnelDetection(_ parsed: SSHArgumentParser.ParsedSSHCommand) {
                     pid: getpid(),
                     ppid: getppid(),
                     path: CommandLine.arguments[0],
-                    arguments: CommandLine.arguments,
+                    arguments: SensitiveDataRedactor.redact(arguments: CommandLine.arguments),
                     user: ProcessInfo.processInfo.environment["USER"] ?? "unknown"
                 ),
                 networkInfo: NetworkMetadata(
@@ -106,7 +106,7 @@ func handleTunnelDetection(_ parsed: SSHArgumentParser.ParsedSSHCommand) {
                 )
             )
 
-            auditLogger.logTunnelAlert(alert)
+            AuditLogger.shared.logTunnelAlert(alert)
         }
     }
 }
@@ -114,13 +114,16 @@ func handleTunnelDetection(_ parsed: SSHArgumentParser.ParsedSSHCommand) {
 // MARK: - Recording
 
 func shouldRecordSession(_ parsed: SSHArgumentParser.ParsedSSHCommand) -> Bool {
+    if ProcessInfo.processInfo.environment["SEKRETSAUCE_RECORD_SSH"] == "1" {
+        return true
+    }
     // Check configuration
     do {
         let config = try SecureStorage.shared.retrieveConfiguration()
         return config.enableSSHRecording
     } catch {
-        // Default to recording if no config
-        return true
+        // Recording is privacy-sensitive and must be explicitly enabled.
+        return false
     }
 }
 
@@ -129,25 +132,23 @@ func recordAndExecute(session: SSHSession, parsed: SSHArgumentParser.ParsedSSHCo
     let recordingDirectory = getRecordingDirectory()
 
     // Ensure directory exists
-    try? FileManager.default.createDirectory(at: recordingDirectory, withIntermediateDirectories: true)
+    do {
+        try FileManager.default.createDirectory(
+            at: recordingDirectory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: recordingDirectory.path
+        )
+    } catch {
+        AuditLogger.shared.logError(error, source: "SSHWrapper", context: "Could not secure recording directory")
+        executeRealSSH(args: Array(CommandLine.arguments.dropFirst()))
+    }
 
     do {
-        // Update session with recording path
-        var recordedSession = session
         let recorder = try SessionRecorder(session: session, recordingDirectory: recordingDirectory)
-        recordedSession = SSHSession(
-            id: session.id,
-            startTime: session.startTime,
-            endTime: nil,
-            user: session.user,
-            sourceHost: session.sourceHost,
-            destinationHost: session.destinationHost,
-            destinationPort: session.destinationPort,
-            command: session.command,
-            arguments: session.arguments,
-            recordingPath: recorder.recordingPath.path,
-            tunnelFlags: session.tunnelFlags
-        )
 
         // Start recording and execute SSH
         let sshPath = getRealSSHPath()
@@ -158,14 +159,18 @@ func recordAndExecute(session: SSHSession, parsed: SSHArgumentParser.ParsedSSHCo
         exit(exitCode)
 
     } catch {
-        auditLogger.logError(error, source: "SSHWrapper", context: "Recording failed, falling back to direct execution")
+        AuditLogger.shared.logError(
+            error,
+            source: "SSHWrapper",
+            context: "Recording failed, falling back to direct execution"
+        )
         // Fall back to direct execution
         executeRealSSH(args: Array(CommandLine.arguments.dropFirst()))
     }
 }
 
 func getRecordingDirectory() -> URL {
-    let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .localDomainMask).first!
+    let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
     return appSupport.appendingPathComponent("SeKretSauce/recordings", isDirectory: true)
 }
 
@@ -182,7 +187,7 @@ func getRealSSHPath() -> String {
 
 func executeRealSSH(args: [String]) {
     let sshPath = getRealSSHPath()
-    var fullArgs = [sshPath] + args
+    let fullArgs = [sshPath] + args
     let cArgs = fullArgs.map { strdup($0) } + [nil]
     execv(sshPath, cArgs)
 

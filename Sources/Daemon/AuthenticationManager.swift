@@ -1,6 +1,8 @@
 import Foundation
+import Common
 
 /// Manages authentication with the central server on boot
+@MainActor
 public final class AuthenticationManager {
 
     public static let shared = AuthenticationManager()
@@ -45,33 +47,37 @@ public final class AuthenticationManager {
             throw AuthenticationError.noCredentials
         }
 
-        // Make authentication request
-        let token = try await performAuthentication(
-            serverURL: serverURL,
+        let endpoint = try secureEndpoint(serverURL)
+        let response = try await performAuthentication(
+            endpoint: endpoint,
             apiKey: apiKey,
             machineID: machineID
         )
 
-        // Store session token
-        self.sessionToken = token
-        self.tokenExpiresAt = Date().addingTimeInterval(3600) // 1 hour default
-        try secureStorage.storeSessionToken(token)
-
-        auditLogger.logAuthSuccess(machineID: machineID)
-
-        // Start token refresh timer
-        startRefreshTimer()
-
-        return token
+        try establishSession(response, machineID: machineID)
+        return response.token
     }
 
     /// Authenticate with provided credentials (for initial setup)
     public func authenticate(serverURL: String, apiKey: String) async throws -> String {
-        // Store credentials
-        try secureStorage.storeCredentials(apiKey: apiKey, serverURL: serverURL)
+        guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw AuthenticationError.invalidCredentials
+        }
 
-        // Perform authentication
-        return try await authenticate()
+        let endpoint = try secureEndpoint(serverURL)
+        let machineID = try secureStorage.getMachineIdentifier()
+        let response = try await performAuthentication(
+            endpoint: endpoint,
+            apiKey: apiKey,
+            machineID: machineID
+        )
+
+        try secureStorage.storeCredentials(
+            apiKey: apiKey,
+            serverURL: endpoint.baseURL.absoluteString
+        )
+        try establishSession(response, machineID: machineID)
+        return response.token
     }
 
     /// Refresh the session token
@@ -82,14 +88,15 @@ public final class AuthenticationManager {
 
         let serverURL = try secureStorage.retrieveServerURL()
 
-        let token = try await performTokenRefresh(
-            serverURL: serverURL,
+        let response = try await performTokenRefresh(
+            endpoint: try secureEndpoint(serverURL),
             currentToken: currentToken
         )
 
-        self.sessionToken = token
-        self.tokenExpiresAt = Date().addingTimeInterval(3600)
-        try secureStorage.storeSessionToken(token)
+        sessionToken = response.token
+        tokenExpiresAt = expirationDate(for: response)
+        try secureStorage.storeSessionToken(response.token)
+        startRefreshTimer()
     }
 
     /// Logout and clear credentials
@@ -101,7 +108,7 @@ public final class AuthenticationManager {
         try secureStorage.clearSessionToken()
 
         auditLogger.log(
-            eventType: .authSuccess,
+            eventType: .authLogout,
             severity: .info,
             source: "AuthManager",
             message: "Logged out successfully"
@@ -118,11 +125,12 @@ public final class AuthenticationManager {
 
     // MARK: - Private Methods
 
-    private func performAuthentication(serverURL: String, apiKey: String, machineID: String) async throws -> String {
-        guard let url = URL(string: "\(serverURL)/api/v1/auth/machine") else {
-            throw AuthenticationError.invalidServerURL
-        }
-
+    private func performAuthentication(
+        endpoint: SecureServerEndpoint,
+        apiKey: String,
+        machineID: String
+    ) async throws -> AuthenticationResponse {
+        let url = endpoint.appending(path: "/api/v1/auth/machine")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -146,7 +154,10 @@ public final class AuthenticationManager {
         switch httpResponse.statusCode {
         case 200...299:
             let authResponse = try JSONDecoder().decode(AuthenticationResponse.self, from: data)
-            return authResponse.token
+            guard !authResponse.token.isEmpty else {
+                throw AuthenticationError.invalidResponse
+            }
+            return authResponse
 
         case 401:
             auditLogger.logAuthFailure(reason: "Invalid API key")
@@ -162,11 +173,11 @@ public final class AuthenticationManager {
         }
     }
 
-    private func performTokenRefresh(serverURL: String, currentToken: String) async throws -> String {
-        guard let url = URL(string: "\(serverURL)/api/v1/auth/refresh") else {
-            throw AuthenticationError.invalidServerURL
-        }
-
+    private func performTokenRefresh(
+        endpoint: SecureServerEndpoint,
+        currentToken: String
+    ) async throws -> AuthenticationResponse {
+        let url = endpoint.appending(path: "/api/v1/auth/refresh")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -183,16 +194,19 @@ public final class AuthenticationManager {
         }
 
         let refreshResponse = try JSONDecoder().decode(AuthenticationResponse.self, from: data)
-        return refreshResponse.token
+        guard !refreshResponse.token.isEmpty else {
+            throw AuthenticationError.invalidResponse
+        }
+        return refreshResponse
     }
 
     private func startRefreshTimer() {
         refreshTimer?.invalidate()
 
-        // Refresh 5 minutes before expiry
-        let refreshInterval: TimeInterval = 55 * 60 // 55 minutes
+        guard let tokenExpiresAt else { return }
+        let refreshInterval = max(30, tokenExpiresAt.timeIntervalSinceNow - 300)
 
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: refreshInterval, repeats: true) { [weak self] _ in
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: refreshInterval, repeats: false) { [weak self] _ in
             Task {
                 do {
                     try await self?.refreshToken()
@@ -201,6 +215,30 @@ public final class AuthenticationManager {
                 }
             }
         }
+    }
+
+    private func secureEndpoint(_ value: String) throws -> SecureServerEndpoint {
+        do {
+            return try SecureServerEndpoint(value)
+        } catch {
+            throw AuthenticationError.invalidServerURL
+        }
+    }
+
+    private func establishSession(
+        _ response: AuthenticationResponse,
+        machineID: String
+    ) throws {
+        sessionToken = response.token
+        tokenExpiresAt = expirationDate(for: response)
+        try secureStorage.storeSessionToken(response.token)
+        auditLogger.logAuthSuccess(machineID: machineID)
+        startRefreshTimer()
+    }
+
+    private func expirationDate(for response: AuthenticationResponse) -> Date {
+        let lifetime = min(max(response.expiresIn ?? 3600, 60), 86_400)
+        return Date().addingTimeInterval(TimeInterval(lifetime))
     }
 }
 

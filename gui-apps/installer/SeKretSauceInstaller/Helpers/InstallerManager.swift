@@ -2,6 +2,7 @@ import Foundation
 import SwiftUI
 import ServiceManagement
 import Security
+import InstallerSupport
 
 /// Manages the installation process
 @MainActor
@@ -25,14 +26,9 @@ class InstallerManager: ObservableObject {
 
     // License
     @Published var acceptedLicense: Bool = false
+    private var installerTeamIdentifier: String?
 
     // Configuration
-    @Published var serverURL: String = ""
-    @Published var apiKey: String = ""
-    @Published var enableSSHRecording: Bool = true
-    @Published var enableTunnelDetection: Bool = true
-    @Published var enableDNSMonitoring: Bool = true
-
     // Computed properties
     var canProceed: Bool {
         switch currentStep {
@@ -103,10 +99,10 @@ class InstallerManager: ObservableObject {
 
     private func performInstallation() async {
         do {
-            // Step 1: Request admin authorization
-            updateStatus("Requesting administrator authorization...", progress: 0.05)
-            try await requestAuthorization()
-            addLog("Administrator authorization granted")
+            // Step 1: Verify the installer before crossing the privilege boundary.
+            updateStatus("Verifying installer signature...", progress: 0.05)
+            try verifyInstallerSignature()
+            addLog("Installer signature verified")
 
             // Step 2: Create directories
             updateStatus("Creating directories...", progress: 0.15)
@@ -124,12 +120,9 @@ class InstallerManager: ObservableObject {
             try await installLaunchDaemon()
             addLog("Installed LaunchDaemon plist")
 
-            // Step 5: Write configuration
-            updateStatus("Writing configuration...", progress: 0.65)
-            try await writeConfiguration()
-            addLog("Configuration saved")
-
-            // Step 6: Set permissions
+            // Step 5: Set permissions. Remote credentials are configured later
+            // in a root-owned terminal so they never cross a command-line or
+            // AppleScript privilege boundary.
             updateStatus("Setting permissions...", progress: 0.75)
             try await setPermissions()
             addLog("Permissions configured")
@@ -161,45 +154,42 @@ class InstallerManager: ObservableObject {
 
     // MARK: - Installation Steps
 
-    private func requestAuthorization() async throws {
-        // Create authorization reference
-        var authRef: AuthorizationRef?
-        var status = AuthorizationCreate(nil, nil, [], &authRef)
-
-        guard status == errAuthorizationSuccess else {
-            throw InstallerError.authorizationFailed
+    private func verifyInstallerSignature() throws {
+        var code: SecStaticCode?
+        guard SecStaticCodeCreateWithPath(Bundle.main.bundleURL as CFURL, [], &code) == errSecSuccess,
+              let code else {
+            throw InstallerError.invalidSignature
         }
 
-        // Request admin rights
-        var rights = AuthorizationItem(
-            name: kAuthorizationRightExecute,
-            valueLength: 0,
-            value: nil,
-            flags: 0
+        let flags = SecCSFlags(
+            rawValue: UInt32(kSecCSStrictValidate | kSecCSCheckAllArchitectures)
         )
-
-        var rightsSet = AuthorizationRights(count: 1, items: &rights)
-
-        let flags: AuthorizationFlags = [.interactionAllowed, .extendRights, .preAuthorize]
-
-        status = AuthorizationCopyRights(authRef!, &rightsSet, nil, flags, nil)
-
-        guard status == errAuthorizationSuccess else {
-            throw InstallerError.authorizationDenied
+        guard SecStaticCodeCheckValidity(code, flags, nil) == errSecSuccess else {
+            throw InstallerError.invalidSignature
         }
 
-        // Small delay to show progress
-        try await Task.sleep(nanoseconds: 300_000_000)
+        var signingInformation: CFDictionary?
+        guard SecCodeCopySigningInformation(code, [], &signingInformation) == errSecSuccess,
+              let information = signingInformation as? [String: Any],
+              let teamIdentifier = information[kSecCodeInfoTeamIdentifier as String] as? String,
+              !teamIdentifier.isEmpty else {
+            throw InstallerError.invalidSignature
+        }
+        installerTeamIdentifier = teamIdentifier
     }
 
     private func createDirectories() async throws {
-        let script = """
-        mkdir -p "/Library/Application Support/SeKretSauce"
-        mkdir -p "/Library/Application Support/SeKretSauce/recordings"
-        mkdir -p "/Library/Logs/SeKretSauce"
-        """
-
-        try await runPrivilegedScript(script)
+        try runPrivileged(
+            PrivilegedCommand(
+                executable: "/bin/mkdir",
+                arguments: [
+                    "-p",
+                    "/Library/Application Support/SeKretSauce",
+                    "/Library/Application Support/SeKretSauce/recordings",
+                    "/Library/Logs/SeKretSauce"
+                ]
+            )
+        )
         try await Task.sleep(nanoseconds: 200_000_000)
     }
 
@@ -212,33 +202,20 @@ class InstallerManager: ObservableObject {
         let daemonSource = "\(bundlePath)/sekretsauced"
         let wrapperSource = "\(bundlePath)/ssh-wrapper"
 
-        // Check if binaries exist in bundle
         let fm = FileManager.default
-        let daemonExists = fm.fileExists(atPath: daemonSource)
-        let wrapperExists = fm.fileExists(atPath: wrapperSource)
-
-        if !daemonExists || !wrapperExists {
-            // Try to use pre-built binaries from build directory
-            let buildDir = "/Users/ryan/development/SeKretSauce/.build/release"
-            let altDaemon = "\(buildDir)/sekretsauced"
-            let altWrapper = "\(buildDir)/ssh-wrapper"
-
-            if fm.fileExists(atPath: altDaemon) && fm.fileExists(atPath: altWrapper) {
-                let script = """
-                cp "\(altDaemon)" "/Library/Application Support/SeKretSauce/sekretsauced"
-                cp "\(altWrapper)" "/Library/Application Support/SeKretSauce/ssh-wrapper"
-                """
-                try await runPrivilegedScript(script)
-            } else {
-                throw InstallerError.missingBinaries
-            }
-        } else {
-            let script = """
-            cp "\(daemonSource)" "/Library/Application Support/SeKretSauce/sekretsauced"
-            cp "\(wrapperSource)" "/Library/Application Support/SeKretSauce/ssh-wrapper"
-            """
-            try await runPrivilegedScript(script)
+        guard fm.fileExists(atPath: daemonSource),
+              fm.fileExists(atPath: wrapperSource) else {
+            throw InstallerError.missingBinaries
         }
+
+        try installSignedBinary(
+            from: daemonSource,
+            to: "/Library/Application Support/SeKretSauce/sekretsauced"
+        )
+        try installSignedBinary(
+            from: wrapperSource,
+            to: "/Library/Application Support/SeKretSauce/ssh-wrapper"
+        )
 
         try await Task.sleep(nanoseconds: 300_000_000)
     }
@@ -274,115 +251,147 @@ class InstallerManager: ObservableObject {
         </plist>
         """
 
-        // Write plist to temp file then move with privileges
-        let tempPath = NSTemporaryDirectory() + "com.sekretsauce.daemon.plist"
-        try plistContent.write(toFile: tempPath, atomically: true, encoding: .utf8)
-
-        let script = """
-        cp "\(tempPath)" "/Library/LaunchDaemons/com.sekretsauce.daemon.plist"
-        chown root:wheel "/Library/LaunchDaemons/com.sekretsauce.daemon.plist"
-        chmod 644 "/Library/LaunchDaemons/com.sekretsauce.daemon.plist"
-        rm "\(tempPath)"
-        """
-
-        try await runPrivilegedScript(script)
-        try await Task.sleep(nanoseconds: 200_000_000)
-    }
-
-    private func writeConfiguration() async throws {
-        let config: [String: Any] = [
-            "serverURL": serverURL,
-            "enableSSHRecording": enableSSHRecording,
-            "enableTunnelDetection": enableTunnelDetection,
-            "enableDNSMonitoring": enableDNSMonitoring,
-            "logLevel": "info",
-            "maxLogRetentionDays": 90
-        ]
-
-        let jsonData = try JSONSerialization.data(withJSONObject: config, options: .prettyPrinted)
-        let jsonString = String(data: jsonData, encoding: .utf8) ?? "{}"
-
-        let tempPath = NSTemporaryDirectory() + "config.json"
-        try jsonString.write(toFile: tempPath, atomically: true, encoding: .utf8)
-
-        let script = """
-        cp "\(tempPath)" "/Library/Application Support/SeKretSauce/config.json"
-        chmod 600 "/Library/Application Support/SeKretSauce/config.json"
-        rm "\(tempPath)"
-        """
-
-        try await runPrivilegedScript(script)
-
-        // Store API key in keychain if provided
-        if !apiKey.isEmpty {
-            // Note: In production, use Security framework to store securely
-            addLog("API key stored in Keychain")
-        }
-
+        try writePrivilegedFile(
+            Data(plistContent.utf8),
+            to: "/Library/LaunchDaemons/com.sekretsauce.daemon.plist",
+            permissions: "0644"
+        )
         try await Task.sleep(nanoseconds: 200_000_000)
     }
 
     private func setPermissions() async throws {
-        let script = """
-        chmod 755 "/Library/Application Support/SeKretSauce"
-        chmod 700 "/Library/Application Support/SeKretSauce/recordings"
-        chmod 755 "/Library/Application Support/SeKretSauce/sekretsauced"
-        chmod 755 "/Library/Application Support/SeKretSauce/ssh-wrapper"
-        chmod 755 "/Library/Logs/SeKretSauce"
-        """
-
-        try await runPrivilegedScript(script)
+        try runPrivileged(
+            PrivilegedCommand(
+                executable: "/bin/chmod",
+                arguments: [
+                    "0755",
+                    "/Library/Application Support/SeKretSauce"
+                ]
+            )
+        )
+        try runPrivileged(
+            PrivilegedCommand(
+                executable: "/bin/chmod",
+                arguments: [
+                    "0700",
+                    "/Library/Application Support/SeKretSauce/recordings",
+                    "/Library/Logs/SeKretSauce"
+                ]
+            )
+        )
+        try runPrivileged(
+            PrivilegedCommand(
+                executable: "/bin/chmod",
+                arguments: [
+                    "0755",
+                    "/Library/Application Support/SeKretSauce/sekretsauced",
+                    "/Library/Application Support/SeKretSauce/ssh-wrapper"
+                ]
+            )
+        )
         try await Task.sleep(nanoseconds: 200_000_000)
     }
 
     private func startDaemon() async throws {
         // First try to unload if already loaded
-        let unloadScript = """
-        launchctl unload /Library/LaunchDaemons/com.sekretsauce.daemon.plist 2>/dev/null || true
-        """
-        try? await runPrivilegedScript(unloadScript)
+        try? runPrivileged(
+            PrivilegedCommand(
+                executable: "/bin/launchctl",
+                arguments: ["bootout", "system/com.sekretsauce.daemon"]
+            )
+        )
 
         try await Task.sleep(nanoseconds: 500_000_000)
 
         // Load the daemon
-        let loadScript = """
-        launchctl load /Library/LaunchDaemons/com.sekretsauce.daemon.plist
-        """
-        try await runPrivilegedScript(loadScript)
+        try runPrivileged(
+            PrivilegedCommand(
+                executable: "/bin/launchctl",
+                arguments: [
+                    "bootstrap",
+                    "system",
+                    "/Library/LaunchDaemons/com.sekretsauce.daemon.plist"
+                ]
+            )
+        )
 
         try await Task.sleep(nanoseconds: 500_000_000)
     }
 
     // MARK: - Privileged Execution
 
-    private func runPrivilegedScript(_ script: String) async throws {
-        // Create a temporary script file
-        let tempScript = NSTemporaryDirectory() + "install_script_\(UUID().uuidString).sh"
-        try script.write(toFile: tempScript, atomically: true, encoding: .utf8)
-
-        // Make it executable
-        try FileManager.default.setAttributes(
-            [.posixPermissions: 0o755],
-            ofItemAtPath: tempScript
-        )
-
-        // Use AppleScript to run with admin privileges
-        let appleScript = """
-        do shell script "\(tempScript)" with administrator privileges
-        """
-
+    private func runPrivileged(_ command: PrivilegedCommand) throws {
         var error: NSDictionary?
-        if let scriptObject = NSAppleScript(source: appleScript) {
-            let result = scriptObject.executeAndReturnError(&error)
-            if error != nil {
-                // Clean up
-                try? FileManager.default.removeItem(atPath: tempScript)
-                throw InstallerError.scriptExecutionFailed
-            }
+        guard let scriptObject = NSAppleScript(source: command.appleScriptSource) else {
+            throw InstallerError.scriptExecutionFailed("Could not create authorization request")
         }
+        _ = scriptObject.executeAndReturnError(&error)
 
-        // Clean up
-        try? FileManager.default.removeItem(atPath: tempScript)
+        if let error {
+            let message = error[NSAppleScript.errorMessage] as? String
+                ?? "Administrator operation failed"
+            throw InstallerError.scriptExecutionFailed(message)
+        }
+    }
+
+    private func installSignedBinary(from source: String, to destination: String) throws {
+        guard let installerTeamIdentifier else {
+            throw InstallerError.invalidSignature
+        }
+        try verifyBinary(at: source, expectedTeamIdentifier: installerTeamIdentifier)
+        try runPrivileged(
+            PrivilegedCommand(
+                executable: "/usr/bin/install",
+                arguments: ["-o", "root", "-g", "wheel", "-m", "0755", source, destination]
+            )
+        )
+        do {
+            try verifyBinary(at: destination, expectedTeamIdentifier: installerTeamIdentifier)
+        } catch {
+            try? runPrivileged(
+                PrivilegedCommand(executable: "/bin/rm", arguments: ["-f", destination])
+            )
+            throw error
+        }
+    }
+
+    private func verifyBinary(at path: String, expectedTeamIdentifier: String) throws {
+        var code: SecStaticCode?
+        guard SecStaticCodeCreateWithPath(URL(fileURLWithPath: path) as CFURL, [], &code) == errSecSuccess,
+              let code else {
+            throw InstallerError.invalidBundledBinary
+        }
+        let flags = SecCSFlags(rawValue: UInt32(kSecCSStrictValidate | kSecCSCheckAllArchitectures))
+        guard SecStaticCodeCheckValidity(code, flags, nil) == errSecSuccess else {
+            throw InstallerError.invalidBundledBinary
+        }
+        var signingInformation: CFDictionary?
+        guard SecCodeCopySigningInformation(code, [], &signingInformation) == errSecSuccess,
+              let information = signingInformation as? [String: Any],
+              let teamIdentifier = information[kSecCodeInfoTeamIdentifier as String] as? String,
+              teamIdentifier == expectedTeamIdentifier else {
+            throw InstallerError.invalidBundledBinary
+        }
+    }
+
+    private func writePrivilegedFile(
+        _ data: Data,
+        to destination: String,
+        permissions: String
+    ) throws {
+        let encoded = data.base64EncodedString()
+        let quotedEncoded = ShellEscaping.quote(encoded)
+        let quotedDestination = ShellEscaping.quote(destination)
+        let command = """
+        set -e
+        umask 077
+        /usr/bin/printf '%s' \(quotedEncoded) | /usr/bin/base64 -D > \(quotedDestination)
+        /usr/sbin/chown root:wheel \(quotedDestination)
+        /bin/chmod \(ShellEscaping.quote(permissions)) \(quotedDestination)
+        """
+        try runPrivileged(
+            PrivilegedCommand(executable: "/bin/sh", arguments: ["-c", command])
+        )
     }
 }
 
@@ -391,8 +400,10 @@ class InstallerManager: ObservableObject {
 enum InstallerError: Error, LocalizedError {
     case authorizationFailed
     case authorizationDenied
+    case invalidSignature
+    case invalidBundledBinary
     case missingBinaries
-    case scriptExecutionFailed
+    case scriptExecutionFailed(String)
     case daemonStartFailed
 
     var errorDescription: String? {
@@ -401,10 +412,14 @@ enum InstallerError: Error, LocalizedError {
             return "Failed to create authorization request"
         case .authorizationDenied:
             return "Administrator authorization was denied"
+        case .invalidSignature:
+            return "The installer is not signed by a trusted development team"
+        case .invalidBundledBinary:
+            return "A bundled binary is unsigned, invalid, or signed by a different development team"
         case .missingBinaries:
             return "Installation binaries not found. Please build the project first with 'swift build -c release'"
-        case .scriptExecutionFailed:
-            return "Failed to execute installation script"
+        case .scriptExecutionFailed(let message):
+            return "Failed to perform privileged installation: \(message)"
         case .daemonStartFailed:
             return "Failed to start the daemon"
         }

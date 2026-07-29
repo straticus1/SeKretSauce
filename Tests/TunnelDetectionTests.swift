@@ -1,6 +1,7 @@
 import XCTest
 @testable import Common
 @testable import TunnelDetection
+@testable import SSHRecorder
 
 final class TunnelDetectionTests: XCTestCase {
 
@@ -68,6 +69,17 @@ final class TunnelDetectionTests: XCTestCase {
 
         XCTAssertFalse(result.isTunnel)
         XCTAssertEqual(result.confidence, 0)
+    }
+
+    func testDoesNotFlagLookalikeTunnelProcessName() {
+        let result = detector.analyzeProcess(
+            path: "/usr/local/bin/notcloudflared-helper",
+            arguments: ["notcloudflared-helper"],
+            pid: 123,
+            user: "test"
+        )
+
+        XCTAssertFalse(result.isTunnel)
     }
 
     // MARK: - Process Detection Tests
@@ -263,6 +275,125 @@ final class TunnelDetectionTests: XCTestCase {
 
         XCTAssertNotNil(alert)
         XCTAssertEqual(alert?.type, .cloudflareTunnel)
+    }
+}
+
+final class AuditLoggerSecurityTests: XCTestCase {
+    func testAuditDirectoryAndFilesArePrivate() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("audit-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let logger = try AuditLogger(logDirectory: directory)
+        logger.log(
+            eventType: .systemStart,
+            severity: .info,
+            source: "test",
+            message: "test"
+        )
+        logger.flush()
+
+        let directoryMode = try permissions(at: directory)
+        XCTAssertEqual(directoryMode, 0o700)
+
+        let file = try XCTUnwrap(logger.getLogFiles().first)
+        XCTAssertEqual(try permissions(at: file), 0o600)
+    }
+
+    private func permissions(at url: URL) throws -> Int {
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        return try XCTUnwrap(attributes[.posixPermissions] as? Int)
+    }
+
+    func testAuditLoggerRejectsSymlinkLogFile() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("audit-symlink-\(UUID().uuidString)", isDirectory: true)
+        let outside = root.deletingLastPathComponent()
+            .appendingPathComponent("outside-\(UUID().uuidString)")
+        try Data("unchanged".utf8).write(to: outside)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        let logName = "audit-\(formatter.string(from: Date())).jsonl"
+        try FileManager.default.createSymbolicLink(
+            at: root.appendingPathComponent(logName),
+            withDestinationURL: outside
+        )
+
+        let logger = try AuditLogger(logDirectory: root)
+        logger.log(
+            eventType: .error,
+            severity: .high,
+            source: "test",
+            message: "must not follow link"
+        )
+        logger.flush()
+
+        XCTAssertEqual(try String(contentsOf: outside), "unchanged")
+        XCTAssertTrue(logger.getLogFiles().isEmpty)
+    }
+}
+
+final class SSHRecordingPrivacyTests: XCTestCase {
+    func testInputIsNotRecordedByDefault() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("recording-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let file = directory.appendingPathComponent("session.cast")
+        let writer = try AsciicastWriter(filePath: file)
+        writer.writeInput(Data("super-secret-password".utf8))
+        writer.close()
+
+        let recording = try String(contentsOf: file, encoding: .utf8)
+        XCTAssertFalse(recording.contains("super-secret-password"))
+        XCTAssertFalse(recording.contains("\"i\""))
+    }
+
+    func testRecordingFileIsPrivate() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("recording-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let file = directory.appendingPathComponent("session.cast")
+        let writer = try AsciicastWriter(filePath: file)
+        writer.close()
+
+        let attributes = try FileManager.default.attributesOfItem(atPath: file.path)
+        XCTAssertEqual(attributes[.posixPermissions] as? Int, 0o600)
+    }
+
+    func testRecordingRefusesToOverwriteExistingFile() throws {
+        let file = FileManager.default.temporaryDirectory
+            .appendingPathComponent("existing-\(UUID().uuidString).cast")
+        try Data("keep".utf8).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+
+        XCTAssertThrowsError(try AsciicastWriter(filePath: file))
+        XCTAssertEqual(try String(contentsOf: file), "keep")
+    }
+}
+
+final class SecureServerEndpointTests: XCTestCase {
+    func testAcceptsHTTPSAndBuildsAPIPath() throws {
+        let endpoint = try SecureServerEndpoint("https://API.Example.com/base/")
+        XCTAssertEqual(
+            endpoint.appending(path: "/api/v1/auth/machine").absoluteString,
+            "https://api.example.com/base/api/v1/auth/machine"
+        )
+    }
+
+    func testRejectsHTTP() {
+        XCTAssertThrowsError(try SecureServerEndpoint("http://api.example.com"))
+    }
+
+    func testRejectsEmbeddedCredentials() {
+        XCTAssertThrowsError(
+            try SecureServerEndpoint("https://user:password@api.example.com")
+        )
     }
 }
 

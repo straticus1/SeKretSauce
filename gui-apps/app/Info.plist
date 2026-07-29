@@ -32,6 +32,10 @@
     <string>NSApplication</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>NSCameraUsageDescription</key>
+    <string>SeKretSauce only requests camera access when you explicitly test or enable camera-related privacy features.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>SeKretSauce only requests microphone access when you explicitly test or enable microphone-related privacy features.</string>
     <key>LSUIElement</key>
     <false/>
 </dict>

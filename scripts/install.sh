@@ -5,6 +5,7 @@
 #
 
 set -e
+umask 077
 
 # Configuration
 INSTALL_DIR="/Library/Application Support/SeKretSauce"
@@ -74,7 +75,7 @@ create_directories() {
     # Set permissions
     chmod 755 "$INSTALL_DIR"
     chmod 700 "$INSTALL_DIR/recordings"
-    chmod 755 "$LOG_DIR"
+    chmod 700 "$LOG_DIR"
 }
 
 # Install binaries
@@ -143,7 +144,8 @@ initial_setup() {
 
     read -p "Enter server URL (or press Enter to skip): " server_url
     if [ -n "$server_url" ]; then
-        read -p "Enter API key: " api_key
+        read -s -p "Enter API key: " api_key
+        echo ""
 
         # Run setup
         "$INSTALL_DIR/sekretsauced" --setup <<EOF

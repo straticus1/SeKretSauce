@@ -19,11 +19,11 @@ type ScanOptions struct {
 
 // ScanResult contains hidden process scan results
 type ScanResult struct {
-	ProcessesScanned        int                `json:"processes_scanned"`
-	LaunchAgentsChecked     int                `json:"launch_agents_checked"`
-	SuspiciousProcesses     []SuspiciousProc   `json:"suspicious_processes,omitempty"`
-	SuspiciousLaunchAgents  []SuspiciousAgent  `json:"suspicious_launch_agents,omitempty"`
-	HiddenFiles             []HiddenFile       `json:"hidden_files,omitempty"`
+	ProcessesScanned       int               `json:"processes_scanned"`
+	LaunchAgentsChecked    int               `json:"launch_agents_checked"`
+	SuspiciousProcesses    []SuspiciousProc  `json:"suspicious_processes,omitempty"`
+	SuspiciousLaunchAgents []SuspiciousAgent `json:"suspicious_launch_agents,omitempty"`
+	HiddenFiles            []HiddenFile      `json:"hidden_files,omitempty"`
 }
 
 // SuspiciousProc represents a potentially suspicious process
@@ -69,17 +69,19 @@ func Scan(opts ScanOptions) (*ScanResult, error) {
 
 	// Scan running processes
 	procs, err := scanProcesses()
-	if err == nil {
-		result.ProcessesScanned = len(procs)
-		result.SuspiciousProcesses = filterSuspiciousProcesses(procs)
+	if err != nil {
+		return nil, fmt.Errorf("scan processes: %w", err)
 	}
+	result.ProcessesScanned = len(procs)
+	result.SuspiciousProcesses = filterSuspiciousProcesses(procs)
 
 	// Scan launch agents and daemons
 	agents, err := scanLaunchAgents()
-	if err == nil {
-		result.LaunchAgentsChecked = len(agents)
-		result.SuspiciousLaunchAgents = filterSuspiciousAgents(agents)
+	if err != nil {
+		return nil, fmt.Errorf("scan launch agents: %w", err)
 	}
+	result.LaunchAgentsChecked = len(agents)
+	result.SuspiciousLaunchAgents = filterSuspiciousAgents(agents)
 
 	// Deep scan: check for hidden files in common persistence locations
 	if opts.Deep {
@@ -101,7 +103,7 @@ type Process struct {
 
 // scanProcesses gets all running processes
 func scanProcesses() ([]Process, error) {
-	cmd := exec.Command("ps", "aux", "-o", "pid,ppid,user,comm,command")
+	cmd := exec.Command("/bin/ps", "-axo", "pid=,ppid=,user=,comm=,command=")
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, err
@@ -110,35 +112,41 @@ func scanProcesses() ([]Process, error) {
 	var processes []Process
 	scanner := bufio.NewScanner(bytes.NewReader(output))
 
-	// Skip header
-	scanner.Scan()
-
 	for scanner.Scan() {
-		line := scanner.Text()
-		fields := strings.Fields(line)
-		if len(fields) < 5 {
+		process, ok := parseProcessLine(scanner.Text())
+		if !ok {
 			continue
 		}
-
-		pid, _ := strconv.Atoi(fields[1])
-		ppid, _ := strconv.Atoi(fields[2])
-
-		proc := Process{
-			User: fields[0],
-			PID:  pid,
-			PPID: ppid,
-			Name: fields[10],
-		}
-
-		if len(fields) > 11 {
-			proc.CommandLine = strings.Join(fields[10:], " ")
-			proc.Path = fields[10]
-		}
-
-		processes = append(processes, proc)
+		processes = append(processes, process)
 	}
-
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
 	return processes, nil
+}
+
+func parseProcessLine(line string) (Process, bool) {
+	fields := strings.Fields(line)
+	if len(fields) < 5 {
+		return Process{}, false
+	}
+	pid, err := strconv.Atoi(fields[0])
+	if err != nil {
+		return Process{}, false
+	}
+	ppid, err := strconv.Atoi(fields[1])
+	if err != nil {
+		return Process{}, false
+	}
+	path := fields[3]
+	return Process{
+		PID:         pid,
+		PPID:        ppid,
+		User:        fields[2],
+		Name:        filepath.Base(path),
+		Path:        path,
+		CommandLine: strings.Join(fields[4:], " "),
+	}, true
 }
 
 // filterSuspiciousProcesses identifies potentially suspicious processes
@@ -175,7 +183,7 @@ func filterSuspiciousProcesses(procs []Process) []SuspiciousProc {
 					Name:            proc.Name,
 					Path:            proc.Path,
 					User:            proc.User,
-					CommandLine:     proc.CommandLine,
+					CommandLine:     redactCommandLine(proc.CommandLine),
 					SuspicionReason: sp.reason,
 					Severity:        sp.severity,
 				})
@@ -209,6 +217,14 @@ func filterSuspiciousProcesses(procs []Process) []SuspiciousProc {
 	}
 
 	return suspicious
+}
+
+var sensitiveArgumentPattern = regexp.MustCompile(`(?i)(--?(?:password|passwd|pwd|token|api[-_]?key|secret)(?:=|\s+))\S+`)
+var credentialURLPattern = regexp.MustCompile(`([a-zA-Z][a-zA-Z0-9+.-]*://)[^/@\s]+@`)
+
+func redactCommandLine(command string) string {
+	command = sensitiveArgumentPattern.ReplaceAllString(command, `${1}<redacted>`)
+	return credentialURLPattern.ReplaceAllString(command, `${1}<redacted>@`)
 }
 
 // LaunchAgent represents a launch agent/daemon plist

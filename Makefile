@@ -14,7 +14,8 @@ all: build
 
 build:
 	@echo "Building SeKretSauce CLI..."
-	@cd sekretsauce-cli && go build -ldflags "-X main.Version=$(VERSION)" -o ../bin/$(CLI_NAME) ./cmd/sekretsauce
+	@mkdir -p bin
+	@cd sekretsauce-cli && go build -ldflags "-X github.com/afterdarktech/sekretsauce/cmd/sekretsauce/cmd.Version=$(VERSION)" -o ../bin/$(CLI_NAME) ./cmd/sekretsauce
 	@echo "Build complete: ./bin/$(CLI_NAME)"
 
 install: build
@@ -62,41 +63,17 @@ release: clean build gui
 
 # Generate Homebrew formula
 homebrew:
-	@echo "Generating Homebrew formula..."
-	@cat > $(BUILD_DIR)/sekretsauce.rb <<'EOF'
-class Sekretsauce < Formula
-  desc "Security Swiss Army Knife for macOS"
-  homepage "https://github.com/afterdarktech/sekretsauce"
-  version "$(VERSION)"
-  license "MIT"
-
-  on_macos do
-    if Hardware::CPU.arm?
-      url "https://github.com/afterdarktech/sekretsauce/releases/download/v$(VERSION)/sekretsauce-$(VERSION)-macos-arm64.tar.gz"
-      sha256 "REPLACE_WITH_SHA256"
-    else
-      url "https://github.com/afterdarktech/sekretsauce/releases/download/v$(VERSION)/sekretsauce-$(VERSION)-macos-amd64.tar.gz"
-      sha256 "REPLACE_WITH_SHA256"
-    end
-  end
-
-  def install
-    bin.install "sekretsauce"
-  end
-
-  test do
-    system "#{bin}/sekretsauce", "--version"
-  end
-end
-EOF
+	@echo "Preparing Homebrew formula..."
+	@mkdir -p $(BUILD_DIR)
+	@cp homebrew/sekretsauce.rb $(BUILD_DIR)/sekretsauce.rb
 	@echo "Homebrew formula: $(BUILD_DIR)/sekretsauce.rb"
 
 # Build for both architectures
 release-all: clean
 	@echo "Building for all architectures..."
 	@mkdir -p $(BUILD_DIR)
-	@cd sekretsauce-cli && GOOS=darwin GOARCH=amd64 go build -ldflags "-X main.Version=$(VERSION)" -o ../$(BUILD_DIR)/$(CLI_NAME)-darwin-amd64 ./cmd/sekretsauce
-	@cd sekretsauce-cli && GOOS=darwin GOARCH=arm64 go build -ldflags "-X main.Version=$(VERSION)" -o ../$(BUILD_DIR)/$(CLI_NAME)-darwin-arm64 ./cmd/sekretsauce
+	@cd sekretsauce-cli && GOOS=darwin GOARCH=amd64 go build -ldflags "-X github.com/afterdarktech/sekretsauce/cmd/sekretsauce/cmd.Version=$(VERSION)" -o ../$(BUILD_DIR)/$(CLI_NAME)-darwin-amd64 ./cmd/sekretsauce
+	@cd sekretsauce-cli && GOOS=darwin GOARCH=arm64 go build -ldflags "-X github.com/afterdarktech/sekretsauce/cmd/sekretsauce/cmd.Version=$(VERSION)" -o ../$(BUILD_DIR)/$(CLI_NAME)-darwin-arm64 ./cmd/sekretsauce
 	@echo "Built: $(BUILD_DIR)/$(CLI_NAME)-darwin-amd64"
 	@echo "Built: $(BUILD_DIR)/$(CLI_NAME)-darwin-arm64"
 

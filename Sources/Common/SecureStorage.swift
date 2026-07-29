@@ -2,7 +2,7 @@ import Foundation
 import Security
 
 /// Secure storage manager using macOS Keychain
-public final class SecureStorage {
+public final class SecureStorage: @unchecked Sendable {
 
     public static let shared = SecureStorage()
 
@@ -15,8 +15,16 @@ public final class SecureStorage {
 
     /// Store credentials securely in Keychain
     public func storeCredentials(apiKey: String, serverURL: String) throws {
-        try store(key: "api_key", value: apiKey)
-        try store(key: "server_url", value: serverURL)
+        let previousAPIKey = try? retrieve(key: "api_key")
+        let previousServerURL = try? retrieve(key: "server_url")
+        do {
+            try store(key: "api_key", value: apiKey)
+            try store(key: "server_url", value: serverURL)
+        } catch {
+            restore(key: "api_key", value: previousAPIKey)
+            restore(key: "server_url", value: previousServerURL)
+            throw error
+        }
     }
 
     /// Retrieve stored API key
@@ -51,25 +59,43 @@ public final class SecureStorage {
             throw SecureStorageError.encodingFailed
         }
 
-        // First try to delete any existing item
-        try? delete(key: key)
-
         var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: serviceName,
-            kSecAttrAccount as String: key,
-            kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+            kSecAttrAccount as String: key
         ]
-
         if let accessGroup = accessGroup {
             query[kSecAttrAccessGroup as String] = accessGroup
         }
+
+        let updateStatus = SecItemUpdate(
+            query as CFDictionary,
+            [kSecValueData as String: data] as CFDictionary
+        )
+        if updateStatus == errSecSuccess {
+            return
+        }
+        guard updateStatus == errSecItemNotFound else {
+            throw SecureStorageError.keychainError(status: updateStatus)
+        }
+
+        query.merge([
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        ]) { _, new in new }
 
         let status = SecItemAdd(query as CFDictionary, nil)
 
         guard status == errSecSuccess else {
             throw SecureStorageError.keychainError(status: status)
+        }
+    }
+
+    private func restore(key: String, value: String?) {
+        if let value {
+            try? store(key: key, value: value)
+        } else {
+            try? delete(key: key)
         }
     }
 
@@ -180,9 +206,8 @@ public final class SecureStorage {
             IOServiceMatching("IOPlatformExpertDevice")
         )
 
-        defer { IOObjectRelease(platformExpert) }
-
         guard platformExpert != 0 else { return nil }
+        defer { IOObjectRelease(platformExpert) }
 
         guard let uuid = IORegistryEntryCreateCFProperty(
             platformExpert,

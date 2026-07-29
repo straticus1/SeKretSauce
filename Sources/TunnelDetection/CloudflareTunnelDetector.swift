@@ -1,8 +1,9 @@
 import Foundation
+import Common
 
 /// Specialized detector for Cloudflare Tunnel (cloudflared)
 /// Detects both the process and network indicators
-public final class CloudflareTunnelDetector {
+public final class CloudflareTunnelDetector: @unchecked Sendable {
 
     public static let shared = CloudflareTunnelDetector()
 
@@ -43,7 +44,7 @@ public final class CloudflareTunnelDetector {
         let processName = (path as NSString).lastPathComponent.lowercased()
 
         // Direct cloudflared detection
-        if processName == "cloudflared" || path.contains("cloudflared") {
+        if processName == "cloudflared" {
             return createAlert(
                 evidence: "Cloudflare Tunnel process detected: \(path)",
                 severity: .high,
@@ -56,7 +57,7 @@ public final class CloudflareTunnelDetector {
         let argsString = arguments.joined(separator: " ")
         if argsString.contains("cloudflared") {
             return createAlert(
-                evidence: "Cloudflare Tunnel command in arguments: \(argsString)",
+                evidence: "Cloudflare Tunnel executable referenced by command arguments",
                 severity: .high,
                 processPath: path,
                 arguments: arguments
@@ -90,10 +91,19 @@ public final class CloudflareTunnelDetector {
 
     /// Check DNS query for Cloudflare tunnel indicators
     public func detectDNS(query: String) -> TunnelAlert? {
-        let lowercaseQuery = query.lowercased()
+        let lowercaseQuery = query.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+
+        if lowercaseQuery == "trycloudflare.com"
+            || lowercaseQuery.hasSuffix(".trycloudflare.com") {
+            return createAlert(
+                evidence: "Quick Cloudflare Tunnel detected: \(query)",
+                severity: .critical,
+                dnsQuery: query
+            )
+        }
 
         for domain in cloudflareDomains {
-            if lowercaseQuery.hasSuffix(domain) || lowercaseQuery.contains(".\(domain)") {
+            if lowercaseQuery == domain || lowercaseQuery.hasSuffix(".\(domain)") {
                 // Higher confidence for tunnel-specific domains
                 let severity: AlertSeverity
                 if domain == "argotunnel.com" || domain == "cftunnel.com" || domain == "trycloudflare.com" {
@@ -108,15 +118,6 @@ public final class CloudflareTunnelDetector {
                     dnsQuery: query
                 )
             }
-        }
-
-        // Check for trycloudflare.com subdomains (quick tunnels)
-        if lowercaseQuery.contains("trycloudflare.com") {
-            return createAlert(
-                evidence: "Quick Cloudflare Tunnel detected: \(query)",
-                severity: .critical,
-                dnsQuery: query
-            )
         }
 
         return nil
@@ -269,7 +270,7 @@ public final class CloudflareTunnelDetector {
                 pid: 0,
                 ppid: 0,
                 path: path,
-                arguments: arguments ?? [],
+                arguments: SensitiveDataRedactor.redact(arguments: arguments ?? []),
                 user: ProcessInfo.processInfo.environment["USER"] ?? "unknown"
             )
         }

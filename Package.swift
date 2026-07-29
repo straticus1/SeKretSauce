@@ -27,6 +27,10 @@ let package = Package(
             name: "TunnelDetection",
             targets: ["TunnelDetection"]
         ),
+        .library(
+            name: "ThreatDetection",
+            targets: ["ThreatDetection"]
+        ),
     ],
     dependencies: [
         // Add external dependencies here if needed
@@ -53,23 +57,32 @@ let package = Package(
             ]
         ),
 
+        .target(
+            name: "ThreatDetection",
+            dependencies: ["Common"],
+            path: "Sources/ThreatDetection",
+            swiftSettings: [
+                .enableExperimentalFeature("StrictConcurrency")
+            ]
+        ),
+
         // Endpoint Security process monitoring
         .target(
-            name: "EndpointSecurity",
-            dependencies: ["Common", "TunnelDetection"],
+            name: "EndpointSecurityMonitor",
+            dependencies: ["Common", "TunnelDetection", "ThreatDetection"],
             path: "Sources/EndpointSecurity",
             swiftSettings: [
                 .enableExperimentalFeature("StrictConcurrency")
             ],
             linkerSettings: [
-                .linkedFramework("EndpointSecurity"),
+                .linkedLibrary("EndpointSecurity"),
                 .linkedFramework("SystemConfiguration")
             ]
         ),
 
         // Network Extension providers
         .target(
-            name: "NetworkExtension",
+            name: "NetworkExtensionProviders",
             dependencies: ["Common", "TunnelDetection"],
             path: "Sources/NetworkExtension",
             swiftSettings: [
@@ -96,7 +109,7 @@ let package = Package(
             dependencies: [
                 "Common",
                 "TunnelDetection",
-                "EndpointSecurity"
+                "EndpointSecurityMonitor"
             ],
             path: "Sources/Daemon",
             swiftSettings: [
@@ -112,7 +125,7 @@ let package = Package(
         // Tests
         .testTarget(
             name: "SeKretSauceTests",
-            dependencies: ["Common", "TunnelDetection"],
+            dependencies: ["Common", "TunnelDetection", "ThreatDetection", "SSHRecorder"],
             path: "Tests"
         ),
     ]

@@ -3,6 +3,7 @@
 
 import Foundation
 import FirewallKit
+import FirewallHelperCore
 
 // MARK: - XPC Protocol
 
@@ -37,6 +38,7 @@ class FirewallHelper: NSObject, FirewallHelperProtocol, NSXPCListenerDelegate {
 
     private let pf = PFManager()
     private let appFirewall = AppFirewallManager()
+    private let connectionVerifier = ConnectionVerifier()
     private let version = "1.0.0"
 
     // MARK: - XPC Listener Delegate
@@ -64,16 +66,9 @@ class FirewallHelper: NSObject, FirewallHelperProtocol, NSXPCListenerDelegate {
     }
 
     private func verifyConnection(_ connection: NSXPCConnection) -> Bool {
-        // In production, verify code signature of connecting app
-        // For now, accept connections from processes with our team ID
         let pid = connection.processIdentifier
         NSLog("FirewallHelper: Connection request from PID \(pid)")
-
-        // TODO: Add proper code signature verification
-        // let secCode = SecCodeCopySelf(...)
-        // Verify it matches expected signing identity
-
-        return true
+        return connectionVerifier.verify(processIdentifier: pid)
     }
 
     // MARK: - PF Operations
@@ -116,9 +111,12 @@ class FirewallHelper: NSObject, FirewallHelperProtocol, NSXPCListenerDelegate {
     func pfAddRule(_ ruleData: Data, reply: @escaping (Bool, String?) -> Void) {
         NSLog("FirewallHelper: pfAddRule requested")
         do {
+            guard ruleData.count <= 64 * 1024 else {
+                throw FirewallHelperInputError.payloadTooLarge
+            }
             let decoder = JSONDecoder()
             let rule = try decoder.decode(PFRuleCodable.self, from: ruleData)
-            try pf.addRule(rule.toPFRule())
+            try pf.addRule(try rule.toPFRule())
             reply(true, nil)
         } catch {
             reply(false, error.localizedDescription)
@@ -310,58 +308,89 @@ struct PFRuleCodable: Codable {
         }
     }
 
-    func toPFRule() -> PFRule {
-        let ruleAction = PFRule.Action(rawValue: action) ?? .block
-        let ruleDirection = PFRule.Direction(rawValue: direction) ?? .any
-        let ruleProtocol = `protocol`.flatMap { PFRule.NetworkProtocol(rawValue: $0) }
+    func toPFRule() throws -> PFRule {
+        guard let ruleAction = PFRule.Action(rawValue: action),
+              let ruleDirection = PFRule.Direction(rawValue: direction) else {
+            throw FirewallHelperInputError.invalidRule
+        }
+
+        let ruleProtocol: PFRule.NetworkProtocol?
+        if let `protocol` {
+            guard let parsedProtocol = PFRule.NetworkProtocol(rawValue: `protocol`) else {
+                throw FirewallHelperInputError.invalidRule
+            }
+            ruleProtocol = parsedProtocol
+        } else {
+            ruleProtocol = nil
+        }
 
         let source: PFRule.Address
         switch sourceType {
         case "host":
-            source = .host(sourceValue ?? "")
+            guard let sourceValue else { throw FirewallHelperInputError.invalidRule }
+            source = .host(sourceValue)
         case "network":
-            source = .network(sourceValue ?? "", sourcePrefix ?? 24)
+            guard let sourceValue, let sourcePrefix else {
+                throw FirewallHelperInputError.invalidRule
+            }
+            source = .network(sourceValue, sourcePrefix)
         case "table":
-            source = .table(sourceValue ?? "")
-        default:
+            guard let sourceValue else { throw FirewallHelperInputError.invalidRule }
+            source = .table(sourceValue)
+        case "any":
             source = .any
+        default:
+            throw FirewallHelperInputError.invalidRule
         }
 
         let destination: PFRule.Address
         switch destType {
         case "host":
-            destination = .host(destValue ?? "")
+            guard let destValue else { throw FirewallHelperInputError.invalidRule }
+            destination = .host(destValue)
         case "network":
-            destination = .network(destValue ?? "", destPrefix ?? 24)
+            guard let destValue, let destPrefix else {
+                throw FirewallHelperInputError.invalidRule
+            }
+            destination = .network(destValue, destPrefix)
         case "table":
-            destination = .table(destValue ?? "")
-        default:
+            guard let destValue else { throw FirewallHelperInputError.invalidRule }
+            destination = .table(destValue)
+        case "any":
             destination = .any
+        default:
+            throw FirewallHelperInputError.invalidRule
         }
 
         var port: PFRule.Port?
         if let portType = portType, let portValue = portValue {
             switch portType {
             case "single":
-                if let p = UInt16(portValue) {
-                    port = .single(p)
+                guard let parsedPort = UInt16(portValue) else {
+                    throw FirewallHelperInputError.invalidRule
                 }
+                port = .single(parsedPort)
             case "range":
                 let parts = portValue.split(separator: ":")
-                if parts.count == 2, let start = UInt16(parts[0]), let end = UInt16(parts[1]) {
-                    port = .range(start, end)
+                guard parts.count == 2,
+                      let start = UInt16(parts[0]),
+                      let end = UInt16(parts[1]) else {
+                    throw FirewallHelperInputError.invalidRule
                 }
+                port = .range(start, end)
             case "list":
                 let ports = portValue.split(separator: ",").compactMap { UInt16($0) }
-                if !ports.isEmpty {
-                    port = .list(ports)
+                guard !ports.isEmpty,
+                      ports.count == portValue.split(separator: ",").count else {
+                    throw FirewallHelperInputError.invalidRule
                 }
+                port = .list(ports)
             default:
-                break
+                throw FirewallHelperInputError.invalidRule
             }
         }
 
-        return PFRule(
+        let rule = PFRule(
             action: ruleAction,
             direction: ruleDirection,
             networkProtocol: ruleProtocol,
@@ -371,6 +400,22 @@ struct PFRuleCodable: Codable {
             port: port,
             log: log
         )
+        try rule.validate()
+        return rule
+    }
+}
+
+enum FirewallHelperInputError: Error, LocalizedError {
+    case payloadTooLarge
+    case invalidRule
+
+    var errorDescription: String? {
+        switch self {
+        case .payloadTooLarge:
+            return "Rule payload exceeds the 64 KiB limit"
+        case .invalidRule:
+            return "Rule payload contains invalid or unsupported values"
+        }
     }
 }
 

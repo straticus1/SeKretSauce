@@ -1,12 +1,15 @@
 package certs
 
 import (
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -53,6 +56,10 @@ type CRTShEntry struct {
 
 // CheckTransparency checks certificate transparency logs for a domain
 func CheckTransparency(domain string) (*ScanResult, error) {
+	domain = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(domain)), ".")
+	if !validDomain(domain) {
+		return nil, fmt.Errorf("invalid domain")
+	}
 	result := &ScanResult{
 		Domain:       domain,
 		Certificates: []Certificate{},
@@ -81,13 +88,13 @@ func CheckTransparency(domain string) (*ScanResult, error) {
 
 // queryCRTSh queries the crt.sh certificate transparency database
 func queryCRTSh(domain string) ([]Certificate, error) {
-	url := fmt.Sprintf("https://crt.sh/?q=%s&output=json", domain)
+	requestURL := fmt.Sprintf("https://crt.sh/?q=%s&output=json", url.QueryEscape(domain))
 
 	client := &http.Client{
 		Timeout: 30 * time.Second,
 	}
 
-	resp, err := client.Get(url)
+	resp, err := client.Get(requestURL)
 	if err != nil {
 		return nil, fmt.Errorf("crt.sh query failed: %w", err)
 	}
@@ -97,7 +104,7 @@ func queryCRTSh(domain string) ([]Certificate, error) {
 		return nil, fmt.Errorf("crt.sh returned status %d", resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 	if err != nil {
 		return nil, err
 	}
@@ -169,7 +176,7 @@ func getActiveCertificate(domain string) (*Certificate, error) {
 		NotBefore:       x509Cert.NotBefore,
 		NotAfter:        x509Cert.NotAfter,
 		SubjectAltNames: x509Cert.DNSNames,
-		Fingerprint:     fmt.Sprintf("%x", x509Cert.Raw[:16]), // First 16 bytes as fingerprint preview
+		Fingerprint:     sha256Fingerprint(x509Cert.Raw),
 	}
 
 	return cert, nil
@@ -178,10 +185,6 @@ func getActiveCertificate(domain string) (*Certificate, error) {
 // analyzeCertificates looks for suspicious patterns
 func analyzeCertificates(certs []Certificate, domain string) []Suspicious {
 	var suspicious []Suspicious
-
-	knownSuspiciousIssuers := []string{
-		"Let's Encrypt", // Not suspicious per se, but worth noting if unexpected
-	}
 
 	for _, cert := range certs {
 		// Check for recently issued certificates (could indicate compromise)
@@ -213,24 +216,12 @@ func analyzeCertificates(certs []Certificate, domain string) []Suspicious {
 		// Check for unexpected SANs (domains that don't match the target)
 		for _, san := range cert.SubjectAltNames {
 			cleanSAN := strings.TrimPrefix(san, "*.")
-			if !strings.HasSuffix(cleanSAN, domain) && cleanSAN != domain {
+			if cleanSAN != domain && !strings.HasSuffix(cleanSAN, "."+domain) {
 				// This SAN is for a different domain - could be suspicious
 				suspicious = append(suspicious, Suspicious{
 					Certificate: cert,
 					Reason:      fmt.Sprintf("Certificate includes unrelated domain: %s", san),
 					Severity:    "high",
-				})
-			}
-		}
-
-		// Check for suspicious issuers (customize based on expected CAs)
-		for _, issuer := range knownSuspiciousIssuers {
-			if strings.Contains(cert.Issuer, issuer) {
-				// Note: Let's Encrypt is legitimate but if you expect corporate certs...
-				suspicious = append(suspicious, Suspicious{
-					Certificate: cert,
-					Reason:      fmt.Sprintf("Issued by: %s (verify if expected)", issuer),
-					Severity:    "low",
 				})
 			}
 		}
@@ -247,6 +238,21 @@ func analyzeCertificates(certs []Certificate, domain string) []Suspicious {
 	}
 
 	return suspicious
+}
+
+var domainPattern = regexp.MustCompile(`^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
+
+func validDomain(domain string) bool {
+	return len(domain) <= 253 && domainPattern.MatchString(domain)
+}
+
+func sha256Fingerprint(der []byte) string {
+	sum := sha256.Sum256(der)
+	parts := make([]string, len(sum))
+	for index, value := range sum {
+		parts[index] = fmt.Sprintf("%02X", value)
+	}
+	return strings.Join(parts, ":")
 }
 
 // GetCertificateChain fetches and validates the full certificate chain

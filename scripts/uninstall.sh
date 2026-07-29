@@ -5,6 +5,7 @@
 #
 
 set -e
+umask 077
 
 # Configuration
 INSTALL_DIR="/Library/Application Support/SeKretSauce"
@@ -73,9 +74,13 @@ if [ -d "$INSTALL_DIR/recordings" ]; then
     read -p "Remove SSH recordings? (y/N): " remove_recordings
     if [ "$remove_recordings" != "y" ] && [ "$remove_recordings" != "Y" ]; then
         log_info "Preserving recordings..."
-        mkdir -p "/tmp/sekretsauce-recordings-backup"
-        cp -r "$INSTALL_DIR/recordings" "/tmp/sekretsauce-recordings-backup/"
-        log_info "Recordings backed up to /tmp/sekretsauce-recordings-backup"
+        backup_dir="$(mktemp -d "/Users/Shared/.sekretsauce-recordings.XXXXXX")"
+        chmod 700 "$backup_dir"
+        cp -R "$INSTALL_DIR/recordings/." "$backup_dir/"
+        if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+            chown -R "$SUDO_USER":staff "$backup_dir"
+        fi
+        log_info "Recordings backed up to $backup_dir"
     fi
 fi
 

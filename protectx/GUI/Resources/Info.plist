@@ -33,7 +33,7 @@
     <key>SMPrivilegedExecutables</key>
     <dict>
         <key>com.rampart.FirewallHelper</key>
-        <string>identifier "com.rampart.FirewallHelper" and anchor apple generic and certificate leaf[subject.CN] = "Developer ID Application: *"</string>
+        <string>identifier "com.rampart.FirewallHelper" and anchor apple generic and certificate leaf[subject.OU] = "$(DEVELOPMENT_TEAM)"</string>
     </dict>
 </dict>
 </plist>

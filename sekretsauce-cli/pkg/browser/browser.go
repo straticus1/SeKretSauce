@@ -4,7 +4,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"time"
 
@@ -27,11 +29,11 @@ type ExportResult struct {
 
 // Profile represents a browser profile
 type Profile struct {
-	Name      string     `json:"name"`
-	Path      string     `json:"path"`
-	Bookmarks []Bookmark `json:"bookmarks,omitempty"`
-	History   []HistoryEntry `json:"history,omitempty"`
-	Passwords []Password `json:"passwords,omitempty"`
+	Name      string                 `json:"name"`
+	Path      string                 `json:"path"`
+	Bookmarks []Bookmark             `json:"bookmarks,omitempty"`
+	History   []HistoryEntry         `json:"history,omitempty"`
+	Passwords []Password             `json:"passwords,omitempty"`
 	Settings  map[string]interface{} `json:"settings,omitempty"`
 }
 
@@ -408,11 +410,11 @@ func exportChromeBookmarks(profilePath string) ([]Bookmark, error) {
 
 func extractChromeBookmarks(data json.RawMessage, folder string, bookmarks *[]Bookmark) {
 	var node struct {
-		Type     string            `json:"type"`
-		Name     string            `json:"name"`
-		URL      string            `json:"url"`
-		DateAdded string           `json:"date_added"`
-		Children []json.RawMessage `json:"children"`
+		Type      string            `json:"type"`
+		Name      string            `json:"name"`
+		URL       string            `json:"url"`
+		DateAdded string            `json:"date_added"`
+		Children  []json.RawMessage `json:"children"`
 	}
 
 	if err := json.Unmarshal(data, &node); err != nil {
@@ -564,9 +566,54 @@ func exportSafariBookmarks(safariPath string) ([]Bookmark, error) {
 		return nil, fmt.Errorf("Safari bookmarks not found")
 	}
 
-	// For now, just return an empty slice - plist parsing requires additional work
-	// In production, we'd use a plist library
-	return []Bookmark{}, nil
+	command := exec.Command("/usr/bin/plutil", "-convert", "json", "-o", "-", bookmarksPath)
+	output, err := command.Output()
+	if err != nil {
+		return nil, fmt.Errorf("convert Safari bookmarks: %w", err)
+	}
+	if len(output) > 16<<20 {
+		return nil, fmt.Errorf("Safari bookmarks plist exceeds 16 MiB")
+	}
+
+	var root map[string]interface{}
+	if err := json.Unmarshal(output, &root); err != nil {
+		return nil, fmt.Errorf("parse Safari bookmarks: %w", err)
+	}
+	var bookmarks []Bookmark
+	collectSafariBookmarks(root, "", &bookmarks)
+	return bookmarks, nil
+}
+
+func collectSafariBookmarks(node map[string]interface{}, folder string, bookmarks *[]Bookmark) {
+	nodeType, _ := node["WebBookmarkType"].(string)
+	if nodeType == "WebBookmarkTypeLeaf" {
+		urlString, _ := node["URLString"].(string)
+		if urlString == "" {
+			return
+		}
+		title := ""
+		if uriDictionary, ok := node["URIDictionary"].(map[string]interface{}); ok {
+			title, _ = uriDictionary["title"].(string)
+		}
+		*bookmarks = append(*bookmarks, Bookmark{
+			Title:  title,
+			URL:    urlString,
+			Folder: folder,
+		})
+		return
+	}
+
+	nextFolder := folder
+	if title, ok := node["Title"].(string); ok && title != "" {
+		nextFolder = title
+	}
+	if children, ok := node["Children"].([]interface{}); ok {
+		for _, child := range children {
+			if childNode, ok := child.(map[string]interface{}); ok {
+				collectSafariBookmarks(childNode, nextFolder, bookmarks)
+			}
+		}
+	}
 }
 
 func copyDBForReading(srcPath string) (string, error) {
@@ -577,15 +624,27 @@ func copyDBForReading(srcPath string) (string, error) {
 	}
 	tmpFile.Close()
 
-	data, err := os.ReadFile(srcPath)
+	source, err := os.Open(srcPath)
 	if err != nil {
 		os.Remove(tmpFile.Name())
 		return "", err
 	}
+	defer source.Close()
 
-	if err := os.WriteFile(tmpFile.Name(), data, 0600); err != nil {
+	destination, err := os.OpenFile(tmpFile.Name(), os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
 		os.Remove(tmpFile.Name())
 		return "", err
+	}
+	_, copyError := io.Copy(destination, source)
+	closeError := destination.Close()
+	if copyError != nil {
+		os.Remove(tmpFile.Name())
+		return "", copyError
+	}
+	if closeError != nil {
+		os.Remove(tmpFile.Name())
+		return "", closeError
 	}
 
 	return tmpFile.Name(), nil

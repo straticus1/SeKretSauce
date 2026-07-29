@@ -1,4 +1,5 @@
 import SwiftUI
+import AVFoundation
 
 struct ContentView: View {
     @StateObject private var viewModel = SeKretSauceViewModel()
@@ -22,6 +23,8 @@ enum ScanTab: String, CaseIterable, Identifiable {
     case hidden = "Hidden Processes"
     case apps = "App Inspector"
     case breach = "Breach Check"
+    case privacy = "Camera & Microphone"
+    case ransomware = "Ransomware Shield"
 
     var id: String { rawValue }
 
@@ -34,6 +37,8 @@ enum ScanTab: String, CaseIterable, Identifiable {
         case .hidden: return "eye.slash.fill"
         case .apps: return "app.badge.checkmark"
         case .breach: return "exclamationmark.triangle.fill"
+        case .privacy: return "video.badge.checkmark"
+        case .ransomware: return "lock.doc.fill"
         }
     }
 }
@@ -72,9 +77,113 @@ struct DetailView: View {
                 AppInspectorView(viewModel: viewModel)
             case .breach:
                 BreachCheckView(viewModel: viewModel)
+            case .privacy:
+                PrivacyControlsView()
+            case .ransomware:
+                RansomwareShieldView()
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+struct RansomwareShieldView: View {
+    @StateObject private var controls = RansomwareShieldControls()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            Text("Ransomware Shield")
+                .font(.title)
+                .fontWeight(.bold)
+
+            Text("The daemon correlates rapid document changes, suspicious execution, persistence changes, ransomware extensions, and protected canary files. Signed bulk editors are reported without being automatically suspended.")
+                .foregroundStyle(.secondary)
+
+            HStack {
+                Image(systemName: controls.canaryInstalled ? "checkmark.shield.fill" : "shield.slash")
+                    .font(.largeTitle)
+                    .foregroundStyle(controls.canaryInstalled ? .green : .orange)
+                VStack(alignment: .leading) {
+                    Text(controls.canaryInstalled ? "Canary protection installed" : "Canary protection not installed")
+                        .font(.headline)
+                    Text("Behavioral monitoring runs in the privileged security agent.")
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button(controls.canaryInstalled ? "Refresh Canaries" : "Install Canaries") {
+                    controls.installCanaries()
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            .padding()
+            .background(RoundedRectangle(cornerRadius: 12).fill(.background))
+
+            if !controls.statusMessage.isEmpty {
+                Text(controls.statusMessage)
+                    .font(.callout)
+            }
+
+            Spacer()
+        }
+        .padding()
+        .onAppear { controls.refresh() }
+    }
+}
+
+struct PrivacyControlsView: View {
+    @StateObject private var controls = PrivacyControls()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            Text("Camera & Microphone Privacy")
+                .font(.title)
+                .fontWeight(.bold)
+
+            Text("macOS does not provide apps a supported global hardware-off switch. These controls show the real permission state, request access only when you choose it, and take you to the system privacy controls to revoke access.")
+                .foregroundStyle(.secondary)
+
+            ForEach(PrivacyDevice.allCases) { device in
+                HStack {
+                    Image(systemName: device == .camera ? "video.fill" : "mic.fill")
+                        .frame(width: 28)
+                    VStack(alignment: .leading) {
+                        Text(device.rawValue.capitalized)
+                            .font(.headline)
+                        Text(statusText(controls.status(for: device)))
+                            .foregroundStyle(statusColor(controls.status(for: device)))
+                    }
+                    Spacer()
+                    if controls.status(for: device) == .notDetermined {
+                        Button("Request Access") {
+                            Task { await controls.requestAccess(to: device) }
+                        }
+                    }
+                    Button("Manage in System Settings") {
+                        controls.openPrivacySettings(for: device)
+                    }
+                }
+                .padding()
+                .background(RoundedRectangle(cornerRadius: 12).fill(.background))
+            }
+
+            Spacer()
+        }
+        .padding()
+        .onAppear { controls.refresh() }
+    }
+
+    private func statusText(_ status: AVAuthorizationStatus) -> String {
+        switch status {
+        case .authorized: return "Allowed for SeKretSauce"
+        case .denied: return "Denied"
+        case .restricted: return "Restricted by macOS policy"
+        case .notDetermined: return "Not requested"
+        @unknown default: return "Unknown"
+        }
+    }
+
+    private func statusColor(_ status: AVAuthorizationStatus) -> Color {
+        status == .authorized ? .green : (status == .notDetermined ? .secondary : .orange)
     }
 }
 
@@ -617,13 +726,13 @@ struct SeverityBadge: View {
 
 // MARK: - Settings View
 struct SettingsView: View {
-    @AppStorage("cliPath") private var cliPath = "/usr/local/bin/sekretsauce"
+    @AppStorage("cliPath") private var cliPath = ""
     @AppStorage("autoScan") private var autoScan = false
 
     var body: some View {
         Form {
             Section("CLI Tool") {
-                TextField("Path to sekretsauce", text: $cliPath)
+                TextField("Auto-detect, or enter a custom path", text: $cliPath)
                 Button("Locate...") {
                     // File picker would go here
                 }

@@ -1,8 +1,9 @@
 import Foundation
+import Common
 
 /// Comprehensive tunnel detection engine
 /// Correlates data from multiple sources to detect tunneling activity
-public final class TunnelDetectionEngine {
+public final class TunnelDetectionEngine: @unchecked Sendable {
 
     public static let shared = TunnelDetectionEngine()
 
@@ -12,7 +13,7 @@ public final class TunnelDetectionEngine {
     // Detection state
     private var recentDNSQueries: [String: [Date]] = [:]
     private var recentConnections: [ConnectionKey: ConnectionStats] = [:]
-    private var suspiciousProcesses: Set<Int32> = []
+    private var analysisTimer: DispatchSourceTimer?
 
     // Thresholds
     private let dnsQueryRateThreshold: Int = 100  // queries per minute to same domain
@@ -24,6 +25,10 @@ public final class TunnelDetectionEngine {
         startPeriodicAnalysis()
     }
 
+    deinit {
+        analysisTimer?.cancel()
+    }
+
     // MARK: - Public API
 
     /// Analyze a DNS query for tunnel indicators
@@ -33,7 +38,7 @@ public final class TunnelDetectionEngine {
         // Check known tunnel domains
         for indicator in TunnelDatabase.indicators {
             for pattern in indicator.dnsPatterns {
-                if query.lowercased().contains(pattern.lowercased()) {
+                if domain(query, matches: pattern) {
                     result.isTunnel = true
                     result.tunnelType = indicator.tunnelType
                     result.confidence = 1.0
@@ -72,7 +77,7 @@ public final class TunnelDetectionEngine {
         // Check known tunnel service domains
         for indicator in TunnelDatabase.indicators {
             for pattern in indicator.dnsPatterns {
-                if host.lowercased().contains(pattern.lowercased()) {
+                if domain(host, matches: pattern) {
                     result.isTunnel = true
                     result.tunnelType = indicator.tunnelType
                     result.confidence = 1.0
@@ -90,19 +95,17 @@ public final class TunnelDetectionEngine {
 
         // Analyze connection patterns
         let key = ConnectionKey(host: host, port: port)
-        trackConnection(key: key, bytesIn: bytesIn, bytesOut: bytesOut)
+        let stats = trackConnection(key: key, bytesIn: bytesIn, bytesOut: bytesOut)
 
         // Check for long-running high-throughput connections (tunnel characteristic)
-        if let stats = recentConnections[key] {
-            if stats.duration > connectionDurationThreshold {
-                result.confidence += 0.2
-                result.evidence.append("Long-running connection: \(Int(stats.duration / 60)) minutes")
-            }
+        if stats.duration > connectionDurationThreshold {
+            result.confidence += 0.2
+            result.evidence.append("Long-running connection: \(Int(stats.duration / 60)) minutes")
+        }
 
-            if stats.totalBytes > dataThroughputThreshold {
-                result.confidence += 0.2
-                result.evidence.append("High data transfer: \(stats.totalBytes / 1_000_000)MB")
-            }
+        if stats.totalBytes > dataThroughputThreshold {
+            result.confidence += 0.2
+            result.evidence.append("High data transfer: \(stats.totalBytes / 1_000_000)MB")
         }
 
         if result.confidence > 0.6 && result.tunnelType == nil {
@@ -127,13 +130,12 @@ public final class TunnelDetectionEngine {
         // Check known tunnel process names
         for indicator in TunnelDatabase.indicators {
             for knownProcess in indicator.processNames {
-                if processName == knownProcess.lowercased() || processName.contains(knownProcess.lowercased()) {
+                if processName == knownProcess.lowercased() {
                     result.isTunnel = true
                     result.tunnelType = indicator.tunnelType
                     result.confidence = 1.0
                     result.evidence.append("Known tunnel process: \(processName)")
 
-                    suspiciousProcesses.insert(pid)
                     return result
                 }
             }
@@ -141,28 +143,26 @@ public final class TunnelDetectionEngine {
 
         // Check for SSH with tunnel flags
         if processName == "ssh" || path == "/usr/bin/ssh" {
-            let argsString = arguments.joined(separator: " ")
-
             // Local forward
-            if argsString.contains("-L") {
+            if containsOption("-L", in: arguments) {
                 result.confidence += 0.5
                 result.evidence.append("SSH local port forward (-L)")
             }
 
             // Remote forward
-            if argsString.contains("-R") {
+            if containsOption("-R", in: arguments) {
                 result.confidence += 0.6
                 result.evidence.append("SSH remote port forward (-R)")
             }
 
             // Dynamic SOCKS
-            if argsString.contains("-D") {
+            if containsOption("-D", in: arguments) {
                 result.confidence += 0.7
                 result.evidence.append("SSH dynamic SOCKS proxy (-D)")
             }
 
             // TUN device
-            if argsString.contains("-w") {
+            if containsOption("-w", in: arguments) {
                 result.confidence += 0.8
                 result.evidence.append("SSH TUN/TAP device (-w)")
             }
@@ -179,8 +179,7 @@ public final class TunnelDetectionEngine {
             result.evidence.append("Network utility that can be used for tunneling: \(processName)")
 
             // Check for -e or -c flags (command execution)
-            let argsString = arguments.joined(separator: " ")
-            if argsString.contains("-e") || argsString.contains("-c") {
+            if containsOption("-e", in: arguments) || containsOption("-c", in: arguments) {
                 result.confidence += 0.3
                 result.evidence.append("Network utility with command execution")
             }
@@ -189,7 +188,6 @@ public final class TunnelDetectionEngine {
         if result.confidence > 0.6 && result.tunnelType == nil {
             result.tunnelType = .unknown
             result.isTunnel = true
-            suspiciousProcesses.insert(pid)
         }
 
         return result
@@ -280,20 +278,21 @@ public final class TunnelDetectionEngine {
         }
     }
 
-    private func trackConnection(key: ConnectionKey, bytesIn: UInt64, bytesOut: UInt64) {
-        queue.async { [weak self] in
-            guard let self = self else { return }
-
-            if var stats = self.recentConnections[key] {
+    private func trackConnection(key: ConnectionKey, bytesIn: UInt64, bytesOut: UInt64) -> ConnectionStats {
+        queue.sync {
+            if var stats = recentConnections[key] {
                 stats.totalBytes += bytesIn + bytesOut
                 stats.lastSeen = Date()
-                self.recentConnections[key] = stats
+                recentConnections[key] = stats
+                return stats
             } else {
-                self.recentConnections[key] = ConnectionStats(
+                let stats = ConnectionStats(
                     firstSeen: Date(),
                     lastSeen: Date(),
                     totalBytes: bytesIn + bytesOut
                 )
+                recentConnections[key] = stats
+                return stats
             }
         }
     }
@@ -301,38 +300,38 @@ public final class TunnelDetectionEngine {
     // MARK: - Periodic Analysis
 
     private func startPeriodicAnalysis() {
-        Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + 60, repeating: 60)
+        timer.setEventHandler { [weak self] in
             self?.performPeriodicAnalysis()
         }
+        timer.resume()
+        analysisTimer = timer
     }
 
     private func performPeriodicAnalysis() {
-        queue.async { [weak self] in
-            guard let self = self else { return }
+        // This method runs on `queue`.
+        let cutoff = Date().addingTimeInterval(-300) // 5 minutes
 
-            // Clean up old data
-            let cutoff = Date().addingTimeInterval(-300) // 5 minutes
+        recentDNSQueries = recentDNSQueries.filter { _, dates in
+            dates.contains { $0 > cutoff }
+        }
 
-            self.recentDNSQueries = self.recentDNSQueries.filter { _, dates in
-                dates.contains { $0 > cutoff }
-            }
-
-            // Analyze long-running connections
-            for (key, stats) in self.recentConnections {
-                if stats.duration > self.connectionDurationThreshold &&
-                   stats.totalBytes > self.dataThroughputThreshold {
-                    let alert = TunnelAlert(
-                        type: .unknown,
-                        evidence: "Suspicious long-running connection to \(key.host):\(key.port) - Duration: \(Int(stats.duration / 60))min, Data: \(stats.totalBytes / 1_000_000)MB",
-                        severity: .medium,
-                        networkInfo: NetworkMetadata(
-                            destinationIP: key.host,
-                            destinationPort: key.port,
-                            protocol: .tcp
-                        )
+        // Analyze long-running connections
+        for (key, stats) in recentConnections {
+            if stats.duration > connectionDurationThreshold &&
+               stats.totalBytes > dataThroughputThreshold {
+                let alert = TunnelAlert(
+                    type: .unknown,
+                    evidence: "Suspicious long-running connection to \(key.host):\(key.port) - Duration: \(Int(stats.duration / 60))min, Data: \(stats.totalBytes / 1_000_000)MB",
+                    severity: .medium,
+                    networkInfo: NetworkMetadata(
+                        destinationIP: key.host,
+                        destinationPort: key.port,
+                        protocol: .tcp
                     )
-                    self.auditLogger.logTunnelAlert(alert)
-                }
+                )
+                auditLogger.logTunnelAlert(alert)
             }
         }
     }
@@ -374,6 +373,21 @@ public final class TunnelDetectionEngine {
             return parts.suffix(2).joined(separator: ".")
         }
         return query
+    }
+
+    private func domain(_ value: String, matches pattern: String) -> Bool {
+        let candidate = value.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        let suffix = pattern.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        return candidate == suffix || candidate.hasSuffix("." + suffix)
+    }
+
+    private func containsOption(_ option: String, in arguments: [String]) -> Bool {
+        arguments.contains {
+            guard $0 != option else { return true }
+            guard $0.hasPrefix(option), $0.count > option.count else { return false }
+            let suffix = $0.dropFirst(option.count)
+            return suffix.first?.isLetter == false
+        }
     }
 }
 

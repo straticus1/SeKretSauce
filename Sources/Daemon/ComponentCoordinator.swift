@@ -1,7 +1,12 @@
 import Foundation
 import os.log
+import CryptoKit
+import Common
+import TunnelDetection
+import EndpointSecurityMonitor
 
 /// Coordinates all security agent components
+@MainActor
 public final class ComponentCoordinator {
 
     public static let shared = ComponentCoordinator()
@@ -31,25 +36,43 @@ public final class ComponentCoordinator {
         auditLogger.logSystemStart()
 
         do {
-            // 1. Authenticate with server
-            os_log(.info, log: log, "Authenticating with server...")
-            let _ = try await authManager.authenticate()
-            os_log(.info, log: log, "Authentication successful")
-
-            // 2. Load configuration
             let config = try loadConfiguration()
 
-            // 3. Start components based on configuration
-            if config.enableSSHRecording {
-                try installSSHWrapper()
+            if SecureStorage.shared.exists(key: "api_key") {
+                do {
+                    os_log(.info, log: log, "Authenticating with server...")
+                    _ = try await authManager.authenticate()
+                    os_log(.info, log: log, "Authentication successful")
+                } catch {
+                    auditLogger.logAuthFailure(reason: error.localizedDescription)
+                    os_log(.error, log: log, "Remote authentication unavailable; local protection will continue")
+                }
+            } else {
+                os_log(.info, log: log, "No remote credentials configured; starting in local-only mode")
             }
 
-            if config.enableTunnelDetection || config.enableDNSMonitoring {
-                try await activateNetworkExtension()
+            if config.enableSSHRecording {
+                do {
+                    try installSSHWrapper()
+                } catch {
+                    auditLogger.logError(error, source: "Coordinator", context: "SSH recording unavailable")
+                }
+            }
+
+            if config.enableDNSMonitoring {
+                do {
+                    try await activateNetworkExtension()
+                } catch {
+                    auditLogger.logError(error, source: "Coordinator", context: "Network extension unavailable")
+                }
             }
 
             if config.enableProcessMonitoring {
-                try startProcessMonitor()
+                do {
+                    try startProcessMonitor(tunnelDetectionEnabled: config.enableTunnelDetection)
+                } catch {
+                    auditLogger.logError(error, source: "Coordinator", context: "Process monitoring unavailable")
+                }
             }
 
             // 4. Start log sync
@@ -77,6 +100,10 @@ public final class ComponentCoordinator {
         stopProcessMonitor()
         deactivateNetworkExtension()
         uninstallSSHWrapper()
+        logSyncTimer?.invalidate()
+        logSyncTimer = nil
+        logCleanupTimer?.invalidate()
+        logCleanupTimer = nil
 
         auditLogger.logSystemStop()
         isRunning = false
@@ -107,45 +134,43 @@ public final class ComponentCoordinator {
             message: "Configuration updated"
         )
 
-        // TODO: Apply configuration changes to running components
+        guard isRunning else { return }
+
+        if config.enableProcessMonitoring && !processMonitorActive {
+            try startProcessMonitor(tunnelDetectionEnabled: config.enableTunnelDetection)
+        } else if !config.enableProcessMonitoring && processMonitorActive {
+            stopProcessMonitor()
+        } else if processMonitorActive {
+            ProcessMonitor.shared.setTunnelDetectionEnabled(config.enableTunnelDetection)
+        }
     }
 
     // MARK: - SSH Wrapper
 
     private func installSSHWrapper() throws {
-        os_log(.info, log: log, "Installing SSH wrapper...")
+        os_log(.info, log: log, "Checking SSH wrapper availability...")
 
-        let wrapperPath = "/usr/local/bin/ssh-wrapper"
-        let originalSSHPath = "/usr/bin/ssh"
-        let backupSSHPath = "/usr/bin/ssh.original"
-
+        let candidatePaths = [
+            "/Library/Application Support/SeKretSauce/ssh-wrapper",
+            "/usr/local/bin/ssh-wrapper"
+        ]
         let fileManager = FileManager.default
 
-        // Check if already installed
-        if fileManager.fileExists(atPath: backupSSHPath) {
-            os_log(.info, log: log, "SSH wrapper already installed")
-            sshWrapperInstalled = true
-            return
-        }
-
-        // Verify our wrapper exists
-        guard fileManager.fileExists(atPath: wrapperPath) else {
-            os_log(.error, log: log, "SSH wrapper binary not found at %{public}@", wrapperPath)
+        guard let wrapperPath = candidatePaths.first(where: {
+            fileManager.isExecutableFile(atPath: $0)
+        }) else {
+            os_log(.error, log: log, "SSH wrapper binary not found")
             throw ComponentError.sshWrapperNotFound
         }
 
-        // Note: Actual installation requires root and SIP disabled or a different approach
-        // In production, this would use a proper installer or configuration profile
-        os_log(.warning, log: log, "SSH wrapper installation requires elevated privileges")
-
         sshWrapperInstalled = true
+        os_log(.info, log: log, "SSH wrapper available at %{public}@; users must invoke or alias it explicitly", wrapperPath)
     }
 
     private func uninstallSSHWrapper() {
         guard sshWrapperInstalled else { return }
 
-        os_log(.info, log: log, "SSH wrapper marked for removal")
-        // In production: restore original ssh binary
+        os_log(.info, log: log, "SSH wrapper availability state cleared")
         sshWrapperInstalled = false
     }
 
@@ -154,15 +179,8 @@ public final class ComponentCoordinator {
     private func activateNetworkExtension() async throws {
         os_log(.info, log: log, "Activating network extension...")
 
-        // Note: Network Extension activation requires user approval
-        // This would typically involve:
-        // 1. Checking if system extension is installed
-        // 2. Requesting activation if needed
-        // 3. Enabling DNS proxy and/or transparent proxy
-
-        // For now, we'll signal that extension management is needed
-        os_log(.info, log: log, "Network extension requires System Preferences approval")
-        networkExtensionActive = true
+        networkExtensionActive = false
+        throw ComponentError.networkExtensionNotInstalled
     }
 
     private func deactivateNetworkExtension() {
@@ -175,54 +193,68 @@ public final class ComponentCoordinator {
 
     // MARK: - Process Monitor
 
-    private func startProcessMonitor() throws {
+    private func startProcessMonitor(tunnelDetectionEnabled: Bool = true) throws {
         os_log(.info, log: log, "Starting process monitor...")
 
-        // Note: Endpoint Security requires special entitlement from Apple
-        // This component will need to be conditionally compiled or use alternative approaches
-
-        os_log(.info, log: log, "Process monitor activated")
+        try ProcessMonitor.shared.start(tunnelDetectionEnabled: tunnelDetectionEnabled)
+        FileMonitor.shared.start()
         processMonitorActive = true
+        os_log(.info, log: log, "Process and file monitors activated")
     }
 
     private func stopProcessMonitor() {
         guard processMonitorActive else { return }
 
         os_log(.info, log: log, "Stopping process monitor")
+        ProcessMonitor.shared.stop()
+        FileMonitor.shared.stop()
         processMonitorActive = false
     }
 
     // MARK: - Log Sync
 
     private var logSyncTimer: Timer?
+    private var logCleanupTimer: Timer?
 
     private func startLogSync(intervalSeconds: Int) {
         logSyncTimer?.invalidate()
+        let safeInterval = min(max(intervalSeconds, 30), 86_400)
 
-        logSyncTimer = Timer.scheduledTimer(withTimeInterval: TimeInterval(intervalSeconds), repeats: true) { [weak self] _ in
+        logSyncTimer = Timer.scheduledTimer(withTimeInterval: TimeInterval(safeInterval), repeats: true) { [weak self] _ in
             Task {
                 await self?.syncLogs()
             }
         }
 
-        os_log(.info, log: log, "Log sync scheduled every %d seconds", intervalSeconds)
+        os_log(.info, log: log, "Log sync scheduled every %d seconds", safeInterval)
     }
 
     private func syncLogs() async {
         guard authManager.isAuthenticated else {
-            os_log(.warning, log: log, "Cannot sync logs - not authenticated")
+            os_log(.default, log: log, "Cannot sync logs - not authenticated")
             return
         }
 
         do {
             let token = try authManager.getSessionToken()
             let serverURL = try SecureStorage.shared.retrieveServerURL()
+            var manifest = loadLogSyncManifest()
 
             // Get unsync'd log files
             let logFiles = auditLogger.getLogFiles()
 
             for file in logFiles.suffix(5) { // Sync last 5 days max at a time
-                try await uploadLogFile(file, serverURL: serverURL, token: token)
+                let data = try readLogFile(file)
+                let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+                guard manifest[file.lastPathComponent] != digest else { continue }
+                try await uploadLogData(
+                    data,
+                    digest: digest,
+                    serverURL: serverURL,
+                    token: token
+                )
+                manifest[file.lastPathComponent] = digest
+                try saveLogSyncManifest(manifest)
             }
 
         } catch {
@@ -230,17 +262,21 @@ public final class ComponentCoordinator {
         }
     }
 
-    private func uploadLogFile(_ file: URL, serverURL: String, token: String) async throws {
-        guard let url = URL(string: "\(serverURL)/api/v1/logs/upload") else {
+    private func uploadLogData(
+        _ logData: Data,
+        digest: String,
+        serverURL: String,
+        token: String
+    ) async throws {
+        guard let endpoint = try? SecureServerEndpoint(serverURL) else {
             throw ComponentError.invalidServerURL
         }
 
-        var request = URLRequest(url: url)
+        var request = URLRequest(url: endpoint.appending(path: "/api/v1/logs/upload"))
         request.httpMethod = "POST"
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-
-        let logData = try Data(contentsOf: file)
+        request.setValue("application/x-ndjson", forHTTPHeaderField: "Content-Type")
+        request.setValue(digest, forHTTPHeaderField: "Idempotency-Key")
         request.httpBody = logData
 
         let (_, response) = try await URLSession.shared.data(for: request)
@@ -251,16 +287,43 @@ public final class ComponentCoordinator {
         }
     }
 
+    private func readLogFile(_ file: URL) throws -> Data {
+        let attributes = try FileManager.default.attributesOfItem(atPath: file.path)
+        let size = (attributes[.size] as? NSNumber)?.intValue ?? 0
+        guard size <= 10 * 1024 * 1024 else {
+            throw ComponentError.logFileTooLarge
+        }
+        return try Data(contentsOf: file, options: [.mappedIfSafe])
+    }
+
+    private func loadLogSyncManifest() -> [String: String] {
+        guard let json = try? SecureStorage.shared.retrieve(key: "log_sync_manifest"),
+              let data = json.data(using: .utf8),
+              let manifest = try? JSONDecoder().decode([String: String].self, from: data) else {
+            return [:]
+        }
+        return manifest
+    }
+
+    private func saveLogSyncManifest(_ manifest: [String: String]) throws {
+        let data = try JSONEncoder().encode(manifest)
+        guard let json = String(data: data, encoding: .utf8) else {
+            throw ComponentError.logUploadFailed
+        }
+        try SecureStorage.shared.store(key: "log_sync_manifest", value: json)
+    }
+
     // MARK: - Log Cleanup
 
     private func scheduleLogCleanup(retentionDays: Int) {
         // Run cleanup daily
-        Timer.scheduledTimer(withTimeInterval: 86400, repeats: true) { [weak self] _ in
-            self?.auditLogger.cleanupOldLogs(retentionDays: retentionDays)
+        logCleanupTimer?.invalidate()
+        logCleanupTimer = Timer.scheduledTimer(withTimeInterval: 86400, repeats: true) { [weak self] _ in
+            self?.auditLogger.cleanupOldLogs(retentionDays: min(max(retentionDays, 1), 3_650))
         }
 
         // Also run immediately
-        auditLogger.cleanupOldLogs(retentionDays: retentionDays)
+        auditLogger.cleanupOldLogs(retentionDays: min(max(retentionDays, 1), 3_650))
     }
 
     // MARK: - Status
@@ -292,6 +355,7 @@ public enum ComponentError: Error, LocalizedError {
     case processMonitorFailed
     case invalidServerURL
     case logUploadFailed
+    case logFileTooLarge
 
     public var errorDescription: String? {
         switch self {
@@ -305,6 +369,8 @@ public enum ComponentError: Error, LocalizedError {
             return "Invalid server URL configured"
         case .logUploadFailed:
             return "Failed to upload logs to server"
+        case .logFileTooLarge:
+            return "Audit log exceeds the 10 MiB upload limit"
         }
     }
 }

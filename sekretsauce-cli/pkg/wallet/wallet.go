@@ -7,30 +7,31 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 )
 
 // ScanOptions configures the wallet scan
 type ScanOptions struct {
-	Paths       []string // Additional paths to scan
-	ScanHome    bool     // Scan user's home directory
-	ScanCommon  bool     // Scan common wallet locations
-	Deep        bool     // Deep scan (slower, more thorough)
+	Paths      []string // Additional paths to scan
+	ScanHome   bool     // Scan user's home directory
+	ScanCommon bool     // Scan common wallet locations
+	Deep       bool     // Deep scan (slower, more thorough)
 }
 
 // ScanResult contains wallet scan results
 type ScanResult struct {
-	WalletsFound     []Wallet       `json:"wallets_found,omitempty"`
-	WalletFiles      []WalletFile   `json:"wallet_files,omitempty"`
-	SeedPhrases      []SeedPhrase   `json:"seed_phrases,omitempty"`
-	AddressesInFiles []AddressFind  `json:"addresses_in_files,omitempty"`
-	Summary          WalletSummary  `json:"summary"`
+	WalletsFound     []Wallet      `json:"wallets_found,omitempty"`
+	WalletFiles      []WalletFile  `json:"wallet_files,omitempty"`
+	SeedPhrases      []SeedPhrase  `json:"seed_phrases,omitempty"`
+	AddressesInFiles []AddressFind `json:"addresses_in_files,omitempty"`
+	Summary          WalletSummary `json:"summary"`
 }
 
 // Wallet represents a found cryptocurrency wallet
 type Wallet struct {
-	Type        string `json:"type"`         // bitcoin, ethereum, etc.
-	Application string `json:"application"`  // Bitcoin Core, MetaMask, etc.
+	Type        string `json:"type"`        // bitcoin, ethereum, etc.
+	Application string `json:"application"` // Bitcoin Core, MetaMask, etc.
 	Path        string `json:"path"`
 	Encrypted   bool   `json:"encrypted"`
 	Size        int64  `json:"size"`
@@ -48,11 +49,11 @@ type WalletFile struct {
 
 // SeedPhrase represents a potential seed phrase/mnemonic found
 type SeedPhrase struct {
-	File       string `json:"file"`
-	Line       int    `json:"line"`
-	WordCount  int    `json:"word_count"`
-	Redacted   string `json:"redacted"` // First word + count
-	Risk       string `json:"risk"`
+	File      string `json:"file"`
+	Line      int    `json:"line"`
+	WordCount int    `json:"word_count"`
+	Redacted  string `json:"redacted"` // First word + count
+	Risk      string `json:"risk"`
 }
 
 // AddressFind represents a crypto address found in a file
@@ -65,12 +66,12 @@ type AddressFind struct {
 
 // WalletSummary provides overview statistics
 type WalletSummary struct {
-	TotalWallets      int `json:"total_wallets"`
-	BitcoinWallets    int `json:"bitcoin_wallets"`
-	EthereumWallets   int `json:"ethereum_wallets"`
-	OtherWallets      int `json:"other_wallets"`
-	SeedPhrasesFound  int `json:"seed_phrases_found"`
-	CriticalFindings  int `json:"critical_findings"`
+	TotalWallets     int `json:"total_wallets"`
+	BitcoinWallets   int `json:"bitcoin_wallets"`
+	EthereumWallets  int `json:"ethereum_wallets"`
+	OtherWallets     int `json:"other_wallets"`
+	SeedPhrasesFound int `json:"seed_phrases_found"`
+	CriticalFindings int `json:"critical_findings"`
 }
 
 // WalletLocation defines where to look for wallet files
@@ -273,6 +274,9 @@ func Scan(opts ScanOptions) (*ScanResult, error) {
 			if err != nil || info.IsDir() {
 				return nil
 			}
+			if info.Mode()&os.ModeSymlink != 0 {
+				return nil
+			}
 
 			// Skip large files
 			if info.Size() > 10*1024*1024 { // 10MB
@@ -327,6 +331,7 @@ func scanFileForCrypto(filePath string) ([]SeedPhrase, []AddressFind) {
 	defer file.Close()
 
 	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	lineNum := 0
 
 	for scanner.Scan() {
@@ -350,7 +355,7 @@ func scanFileForCrypto(filePath string) ([]SeedPhrase, []AddressFind) {
 					File:      filePath,
 					Line:      lineNum,
 					WordCount: len(words),
-					Redacted:  words[0] + " ... (" + string(rune('0'+len(words))) + " words)",
+					Redacted:  words[0] + " ... (" + strconv.Itoa(len(words)) + " words)",
 					Risk:      "critical",
 				})
 			}

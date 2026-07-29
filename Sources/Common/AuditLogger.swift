@@ -1,8 +1,9 @@
 import Foundation
 import os.log
+import Darwin
 
 /// Centralized audit logging system for compliance and security monitoring
-public final class AuditLogger {
+public final class AuditLogger: @unchecked Sendable {
 
     public static let shared = AuditLogger()
 
@@ -18,14 +19,23 @@ public final class AuditLogger {
     private var logLevel: LogLevel = .info
 
     private init() {
-        // Set up log directory
         let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .localDomainMask).first!
-        logDirectory = appSupport.appendingPathComponent("SeKretSauce/logs", isDirectory: true)
+        let directory = appSupport.appendingPathComponent("SeKretSauce/logs", isDirectory: true)
+        self.logDirectory = directory
 
-        // Create directory if needed
-        try? fileManager.createDirectory(at: logDirectory, withIntermediateDirectories: true)
+        try? Self.secureDirectory(directory, fileManager: fileManager)
 
-        // Set up date formatter
+        dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyy-MM-dd"
+
+        encoder.outputFormatting = [.sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+    }
+
+    init(logDirectory: URL) throws {
+        self.logDirectory = logDirectory
+        try Self.secureDirectory(logDirectory, fileManager: fileManager)
+
         dateFormatter = DateFormatter()
         dateFormatter.dateFormat = "yyyy-MM-dd"
 
@@ -115,7 +125,7 @@ public final class AuditLogger {
             "session_id": session.id.uuidString,
             "user": session.user,
             "destination": "\(session.destinationHost):\(session.destinationPort)",
-            "arguments": session.arguments.joined(separator: " ")
+            "arguments": SensitiveDataRedactor.redact(arguments: session.arguments).joined(separator: " ")
         ]
 
         if let recordingPath = session.recordingPath {
@@ -205,7 +215,7 @@ public final class AuditLogger {
                 "ppid": String(process.ppid),
                 "path": process.path,
                 "user": process.user,
-                "arguments": process.arguments.joined(separator: " ")
+                "arguments": SensitiveDataRedactor.redact(arguments: process.arguments).joined(separator: " ")
             ]
         )
     }
@@ -231,7 +241,7 @@ public final class AuditLogger {
 
     private func writeEvent(_ event: AuditEvent) {
         // Check log level
-        guard event.severity >= logLevel else { return }
+        guard shouldLog(event.severity) else { return }
 
         // Also log to system log
         logToOSLog(event)
@@ -264,15 +274,65 @@ public final class AuditLogger {
         // Create new log file
         let logPath = logDirectory.appendingPathComponent("audit-\(today).jsonl")
 
-        if !fileManager.fileExists(atPath: logPath.path) {
-            fileManager.createFile(atPath: logPath.path, contents: nil)
+        let descriptor = open(
+            logPath.path,
+            O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW,
+            0o600
+        )
+        guard descriptor >= 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
         }
 
-        let handle = try FileHandle(forWritingTo: logPath)
-        handle.seekToEndOfFile()
+        var status = stat()
+        guard fstat(descriptor, &status) == 0,
+              (status.st_mode & S_IFMT) == S_IFREG,
+              status.st_nlink == 1,
+              fchmod(descriptor, 0o600) == 0 else {
+            let savedError = errno
+            close(descriptor)
+            throw POSIXError(POSIXErrorCode(rawValue: savedError) ?? .EIO)
+        }
+
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
         currentLogFile = handle
 
         return handle
+    }
+
+    private func shouldLog(_ severity: AlertSeverity) -> Bool {
+        let minimumSeverity: AlertSeverity
+        switch logLevel {
+        case .debug, .info:
+            minimumSeverity = .info
+        case .warning:
+            minimumSeverity = .medium
+        case .error:
+            minimumSeverity = .high
+        }
+        return severity >= minimumSeverity
+    }
+
+    private static func secureDirectory(_ directory: URL, fileManager: FileManager) throws {
+        try fileManager.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        var status = stat()
+        guard lstat(directory.path, &status) == 0,
+              (status.st_mode & S_IFMT) == S_IFDIR else {
+            throw CocoaError(.fileWriteInvalidFileName)
+        }
+        try fileManager.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: directory.path
+        )
+    }
+
+    func flush() {
+        queue.sync {
+            currentLogFile?.synchronizeFile()
+        }
     }
 
     private func logToOSLog(_ event: AuditEvent) {
@@ -300,7 +360,18 @@ public final class AuditLogger {
             includingPropertiesForKeys: [.creationDateKey],
             options: .skipsHiddenFiles
         )
-        return files?.filter { $0.pathExtension == "jsonl" } ?? []
+        return files?.filter {
+            $0.pathExtension == "jsonl"
+                && $0.lastPathComponent.hasPrefix("audit-")
+                && Self.isRegularSingleLinkFile($0)
+        } ?? []
+    }
+
+    private static func isRegularSingleLinkFile(_ file: URL) -> Bool {
+        var status = stat()
+        return lstat(file.path, &status) == 0
+            && (status.st_mode & S_IFMT) == S_IFREG
+            && status.st_nlink == 1
     }
 
     /// Read events from a log file
@@ -323,10 +394,17 @@ public final class AuditLogger {
 
     /// Cleanup old log files
     public func cleanupOldLogs(retentionDays: Int) {
+        let safeRetentionDays = min(max(retentionDays, 1), 3_650)
         queue.async { [weak self] in
             guard let self = self else { return }
 
-            let cutoffDate = Calendar.current.date(byAdding: .day, value: -retentionDays, to: Date())!
+            guard let cutoffDate = Calendar.current.date(
+                byAdding: .day,
+                value: -safeRetentionDays,
+                to: Date()
+            ) else {
+                return
+            }
 
             for file in self.getLogFiles() {
                 guard let attrs = try? self.fileManager.attributesOfItem(atPath: file.path),
@@ -344,30 +422,31 @@ public final class AuditLogger {
 
     /// Export logs for compliance
     public func exportLogs(from startDate: Date, to endDate: Date) throws -> Data {
-        var allEvents: [AuditEvent] = []
+        try queue.sync {
+            var allEvents: [AuditEvent] = []
 
-        for file in getLogFiles() {
-            // Check if file is in date range based on filename
-            let filename = file.deletingPathExtension().lastPathComponent
-            guard filename.hasPrefix("audit-") else { continue }
+            for file in getLogFiles() {
+                // Check if file is in date range based on filename
+                let filename = file.deletingPathExtension().lastPathComponent
+                guard filename.hasPrefix("audit-") else { continue }
 
-            let dateString = String(filename.dropFirst(6))
-            guard let fileDate = dateFormatter.date(from: dateString) else { continue }
+                let dateString = String(filename.dropFirst(6))
+                guard let fileDate = dateFormatter.date(from: dateString) else { continue }
 
-            if fileDate >= startDate && fileDate <= endDate {
-                let events = try readEvents(from: file)
-                allEvents.append(contentsOf: events)
+                if fileDate >= startDate && fileDate <= endDate {
+                    let events = try readEvents(from: file)
+                    allEvents.append(contentsOf: events)
+                }
             }
+
+            allEvents.sort { $0.timestamp < $1.timestamp }
+
+            let exportEncoder = JSONEncoder()
+            exportEncoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            exportEncoder.dateEncodingStrategy = .iso8601
+
+            return try exportEncoder.encode(allEvents)
         }
-
-        // Sort by timestamp
-        allEvents.sort { $0.timestamp < $1.timestamp }
-
-        let exportEncoder = JSONEncoder()
-        exportEncoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        exportEncoder.dateEncodingStrategy = .iso8601
-
-        return try exportEncoder.encode(allEvents)
     }
 
     deinit {
@@ -379,7 +458,7 @@ public final class AuditLogger {
 
 extension AuditLogger {
     public func debug(_ message: String, source: String = "Debug") {
-        guard logLevel == .debug else { return }
+        guard queue.sync(execute: { logLevel == .debug }) else { return }
         log(
             eventType: .error, // Using error as generic type
             severity: .info,

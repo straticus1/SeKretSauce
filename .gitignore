@@ -38,6 +38,7 @@ Package.resolved
 
 # Build outputs
 build/
+bin/
 *.o
 *.a
 *.dylib
@@ -69,7 +70,8 @@ local.config
 # Installer build artifacts
 *.pkg
 *.dmg
-sekretsauce
+/sekretsauce
+/sekretsauce-cli/sekretsauce
 
 # Go binaries
 brewster/brewster

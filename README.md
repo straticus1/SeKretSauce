@@ -1,224 +1,155 @@
 # SeKretSauce
 
-A comprehensive macOS security agent for monitoring SSH sessions, detecting tunneling activity, and providing network visibility for compliance and security auditing.
+SeKretSauce is a macOS security toolkit with three related products:
 
-## Features
+- a privileged local security agent built with Endpoint Security;
+- a Go CLI and SwiftUI dashboard for security inventory and investigation;
+- ProtectX, a packet-filter and Application Firewall manager.
 
-### SSH Session Recording
-- Full session capture in Asciicast v2 format (compatible with asciinema player)
-- Tunnel flag detection (-L, -R, -D, -w)
-- Real-time audit logging
+The agent runs in local-only mode by default. Connecting it to a remote service
+is optional and requires an HTTPS endpoint plus an API key configured through a
+root-owned terminal.
 
-### Tunnel Detection
-- **Cloudflare Tunnel** (cloudflared, trycloudflare.com)
-- **ngrok** (ngrok.io)
-- **Tailscale** (ts.net)
-- **SSH tunnels** (local/remote/dynamic forwards)
-- **DNS tunneling** (entropy analysis, suspicious query patterns)
-- **HTTP CONNECT tunnels**
-- **WebSocket tunnels**
-- Generic tunnel service detection (serveo, localhost.run, bore, frp, chisel, etc.)
+## Current features
 
-### Network Monitoring
-- DNS query logging and analysis
-- Transparent proxy for connection metadata
-- TLS SNI extraction
-- Content filtering (WebKit-based traffic)
+### Behavioral malware and ransomware detection
 
-### Process Monitoring
-- Endpoint Security framework integration
-- Process execution tracking
-- Sensitive file access monitoring
-- Kernel extension load detection
+- Correlates process execution, code-signing state, obfuscated interpreter
+  commands, persistence changes, credential-file changes, security-control
+  tampering, rapid document writes, ransomware extensions, and canary files.
+- Suspends a process only after a critical correlated verdict. A signed bulk
+  editor is reported but is not suspended based on volume alone.
+- Includes a GUI action that installs private ransomware canaries in the
+  current user's Documents directory.
 
-## Architecture
+This requires Apple's Endpoint Security entitlement and Full Disk Access. The
+monitor operates on notification events, so containment happens immediately
+after a high-confidence event rather than before the filesystem operation.
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    Launch Daemon (root)                      │
-│              Authenticates on boot, manages agents           │
-├─────────────────────────────────────────────────────────────┤
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
-│  │ SSH Wrapper │  │ Network Ext │  │ Tunnel Detection    │  │
-│  │ + Recording │  │ (DNS/Proxy) │  │ Engine              │  │
-│  └─────────────┘  └─────────────┘  └─────────────────────┘  │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
-│  │ Endpoint    │  │ File        │  │ Audit Logger        │  │
-│  │ Security    │  │ Monitor     │  │ (JSONL format)      │  │
-│  └─────────────┘  └─────────────┘  └─────────────────────┘  │
-├─────────────────────────────────────────────────────────────┤
-│                   Secure Log Storage + API                   │
-└─────────────────────────────────────────────────────────────┘
-```
+### Process and tunnel monitoring
+
+- Endpoint Security process, file-open, file-write, rename, kext-load, mount,
+  fork, signal, and exit subscriptions.
+- Detection for SSH forwarding, Cloudflare Tunnel, ngrok, Tailscale,
+  WireGuard, OpenVPN, DNS-tunnel-like names, and related tools.
+- Exact DNS-label and executable-name matching to reduce lookalike false
+  positives.
+- Sensitive command-line values are redacted before audit logging.
+
+### SSH session auditing
+
+- SSH option and forwarding detection.
+- Optional asciicast v2 output recording with private directories and `0600`
+  files.
+- Terminal input is never recorded by default, and recording is opt-in when no
+  configuration exists.
+
+Users must invoke or alias the installed `ssh-wrapper` explicitly. Set
+`SEKRETSAUCE_RECORD_SSH=1` for an individual invocation to opt into output
+recording; ordinary `ssh` is never silently replaced.
+
+### Security inventory CLI
+
+- Keychain metadata review.
+- Browser bookmark, history, and settings export for Safari, Chrome, Firefox.
+- Installed app, launch-agent, process, secret, wallet, CA, and certificate
+  transparency checks.
+- HIBP password range checks using k-anonymity. Account lookups are opt-in and
+  require both `--check-breaches` and `HIBP_API_KEY`.
+- Machine-readable JSON with private output files and symlink protection.
+
+### ProtectX firewall management
+
+- Dedicated PF anchor that preserves the system's existing `/etc/pf.conf`.
+- Strict PF rule validation, atomic configuration writes, and syntax checks.
+- Application Firewall management without shell interpolation.
+- A privileged XPC helper that accepts only approved, same-team signed clients.
+
+### Camera and microphone privacy controls
+
+The GUI displays the real macOS authorization state, can request access when
+the user explicitly asks, and opens the correct System Settings privacy pane
+for revocation. macOS does not provide third-party apps a supported global
+camera or microphone hardware-off API, so the UI does not claim to offer one.
+
+## Deliberately disabled
+
+The DNS and transparent proxy providers refuse to start. Their earlier
+implementation reflected bytes back to the originating app instead of creating
+a genuine upstream relay, which could loop or corrupt traffic. The passive
+content-filter and Endpoint Security paths remain available. A future proxy
+must bridge an independently authenticated `NWConnection` in both directions
+and receive a separate security review before activation.
 
 ## Requirements
 
-- macOS 13 (Ventura) or later
-- Apple Developer account (for code signing)
-- Endpoint Security entitlement (requires Apple approval)
-- Root privileges for daemon
+- macOS 13 or later for the agent; macOS 14 for the GUI.
+- Root privileges for the launch daemon and firewall changes.
+- Apple-approved Endpoint Security entitlement for behavioral monitoring.
+- Developer ID signing and the relevant Network/System Extension entitlements
+  for packaged distribution.
 
-## Building
+## Build and test
 
 ```bash
-# Build release version
-swift build -c release
+# Go CLI
+make build
 
-# Build debug version
+# Security agent
 swift build
-```
+swift test
 
-## Installation
+# GUI
+cd gui-apps/app
+swift build
 
-```bash
-# Build first
-swift build -c release
-
-# Install (requires root)
-sudo ./Installer/install.sh
-```
-
-## Configuration
-
-### Initial Setup
-
-```bash
-sudo /Library/Application\ Support/SeKretSauce/sekretsauced --setup
-```
-
-You'll be prompted for:
-- Server URL (for centralized logging)
-- API key
-
-### Check Status
-
-```bash
-sudo /Library/Application\ Support/SeKretSauce/sekretsauced --status
-```
-
-## Logs
-
-- **Daemon logs**: `/Library/Logs/SeKretSauce/daemon.log`
-- **Audit logs**: `/Library/Application Support/SeKretSauce/logs/audit-YYYY-MM-DD.jsonl`
-- **SSH recordings**: `/Library/Application Support/SeKretSauce/recordings/`
-
-### Audit Log Format (JSONL)
-
-```json
-{
-  "id": "uuid",
-  "timestamp": "2024-01-15T10:30:00Z",
-  "eventType": "TUNNEL_ALERT",
-  "severity": "HIGH",
-  "source": "TunnelDetection",
-  "message": "SSH tunnel detected: SSH Tunnel",
-  "metadata": {
-    "process_path": "/usr/bin/ssh",
-    "tunnel_type": "Local Forward (-L)"
-  }
-}
-```
-
-## Components
-
-### Daemon (`sekretsauced`)
-Main daemon that runs at boot with root privileges. Manages all other components.
-
-### SSH Wrapper (`ssh-wrapper`)
-Intercepts SSH commands to:
-- Record sessions in asciicast format
-- Detect and log tunnel flags
-- Alert on connections to known tunnel services
-
-### Network Extension
-System extension providing:
-- **DNS Proxy**: Intercepts all DNS queries for analysis
-- **Transparent Proxy**: Monitors TCP connections
-- **Content Filter**: Deep packet inspection for WebKit traffic
-
-### Endpoint Security Monitor
-Uses Apple's Endpoint Security framework to monitor:
-- Process execution (exec events)
-- File access (open/write events)
-- System changes (kext loading, mounts)
-
-## Entitlements Required
-
-```xml
-<!-- Main daemon -->
-<key>com.apple.developer.endpoint-security.client</key>
-<true/>
-
-<!-- Network Extension -->
-<key>com.apple.developer.networking.networkextension</key>
-<array>
-    <string>dns-proxy</string>
-    <string>app-proxy-provider</string>
-    <string>content-filter-provider</string>
-</array>
-
-<!-- System Extension host -->
-<key>com.apple.developer.system-extension.install</key>
-<true/>
-```
-
-## Uninstallation
-
-```bash
-sudo ./Installer/uninstall.sh
-```
-
-## Development
-
-### Project Structure
-
-```
-SeKretSauce/
-├── Sources/
-│   ├── Common/           # Shared models and utilities
-│   ├── Daemon/           # Main daemon
-│   ├── SSHRecorder/      # SSH wrapper and recording
-│   ├── NetworkExtension/ # DNS/Proxy providers
-│   ├── TunnelDetection/  # Detection engine
-│   └── EndpointSecurity/ # Process monitoring
-├── Tests/
-├── Resources/            # Plists, entitlements
-├── Installer/            # Install/uninstall scripts
-└── Package.swift
-```
-
-### Running Tests
-
-```bash
+# ProtectX
+cd protectx/FirewallKit
 swift test
 ```
 
-## Security Considerations
+## Install and configure
 
-- Runs as root for full system access
-- Credentials stored in macOS Keychain
-- Logs encrypted at rest (implement based on your requirements)
-- Requires MDM deployment for enterprise use
+```bash
+swift build -c release
+sudo ./scripts/install.sh
 
-## Known Tunnel Services Detected
+# Optional remote log service configuration; the API key is read without echo.
+sudo "/Library/Application Support/SeKretSauce/sekretsauced" --setup
+```
 
-| Service | Detection Method |
-|---------|------------------|
-| Cloudflare Tunnel | Process, DNS, ports |
-| ngrok | Process, DNS |
-| Tailscale | Process, DNS, ports |
-| WireGuard | Process, ports |
-| OpenVPN | Process, ports |
-| serveo.net | DNS |
-| localhost.run | DNS |
-| bore.pub | DNS, process |
-| frp | Process, ports |
-| chisel | Process |
+The agent continues local protection if remote authentication is unavailable.
+Remote endpoints must use HTTPS and may not contain embedded credentials.
+
+## Data locations and privacy
+
+- Audit logs: `/Library/Application Support/SeKretSauce/logs/`
+- Launch-daemon stdout/stderr: `/Library/Logs/SeKretSauce/`
+- Per-user SSH recordings:
+  `~/Library/Application Support/SeKretSauce/recordings/`
+
+Audit and recording directories use mode `0700`; files use `0600`. Logs are not
+application-layer encrypted. Deployments that require encrypted log payloads
+should use FileVault for local data and add an organization-approved encryption
+scheme before remote export.
+
+## Project layout
+
+```text
+Sources/
+  Common/             shared models, Keychain, redaction, audit logging
+  Daemon/             authentication and component lifecycle
+  EndpointSecurity/   process/file event integration
+  ThreatDetection/    behavioral scoring and ransomware correlation
+  TunnelDetection/    tunnel indicators and correlation
+  SSHRecorder/        SSH parsing and optional asciicast capture
+  NetworkExtension/   passive filter and disabled proxy placeholders
+sekretsauce-cli/      Go investigation CLI
+gui-apps/app/         SwiftUI dashboard and privacy controls
+gui-apps/installer/   signed installer
+protectx/             firewall library, GUI, CLI, and privileged helper
+```
 
 ## License
 
-Proprietary - All rights reserved.
-
-## Contributing
-
-Internal use only.
+Proprietary — all rights reserved.
