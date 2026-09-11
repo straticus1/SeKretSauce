@@ -9,18 +9,25 @@ let package = Package(
     products: [
         .executable(name: "SeKretSauceGUI", targets: ["SeKretSauceGUI"])
     ],
+    dependencies: [.package(path: "../..")],
     targets: [
         .executableTarget(
             name: "SeKretSauceGUI",
+            dependencies: [.product(name: "SeKretSauceCommon", package: "afterdark-secretsauce")],
             path: ".",
-            exclude: ["Package.swift"],
+            exclude: ["Package.swift", "Tests", "Info.plist", "build.sh"],
             sources: [
                 "SeKretSauceApp.swift",
                 "ContentView.swift",
                 "ViewModel.swift",
                 "PrivacyControls.swift",
-                "RansomwareShieldControls.swift"
+                "RansomwareShieldControls.swift",
+                "ScanReport.swift",
+                "ScanHistory.swift",
+                "CLIProcess.swift",
+                "IncidentView.swift"
             ]
-        )
+        ),
+        .testTarget(name: "SeKretSauceGUITests", dependencies: ["SeKretSauceGUI"], path: "Tests")
     ]
 )

@@ -117,410 +117,306 @@ class SeKretSauceViewModel: ObservableObject {
     @Published var isScanning = false
     @Published var scanStatus = ""
     @Published var findings: [Finding] = []
-
-    // Stats
     @Published var keychainCount = 0
     @Published var launchAgentCount = 0
     @Published var appCount = 0
-
-    // Browser
     @Published var browserResults: [BrowserResult] = []
-
-    // Keychain
     @Published var keychainItems: [KeychainItem] = []
-
-    // Certificates
     @Published var certificates: [Certificate] = []
-
-    // Hidden
     @Published var suspiciousProcesses: [SuspiciousProcess] = []
     @Published var suspiciousAgents: [SuspiciousAgent] = []
-
-    // Apps
     @Published var appIssues: [AppIssue] = []
-
-    // Breach
     @Published var breaches: [BreachResult] = []
     @Published var breachCheckComplete = false
-
+    @Published var components: [ScanReport.Component] = []
+    @Published var scanHistory: [ScanReport] = []
+    @Published var changes: ScanChanges?
+    private let history: ScanHistory
     @AppStorage("cliPath") private var cliPath = ""
+    private var scanTask: Task<Void, Never>?
+    private var runID: UUID?
+    private let executor: (@Sendable ([String]) async throws -> Data)?
 
-    // MARK: - CLI Execution
+    init(
+        executor: (@Sendable ([String]) async throws -> Data)? = nil,
+        history: ScanHistory = ScanHistory()
+    ) {
+        self.executor = executor
+        self.history = history
+        if executor == nil { scanHistory = (try? history.load()) ?? [] }
+    }
 
     private func runCLI(args: [String]) async throws -> Data {
+        if let executor { return try await executor(args) }
         let executablePath = try resolvedCLIPath()
-        return try await Task.detached {
-            let process = Process()
-            let pipe = Pipe()
-
-            process.executableURL = URL(fileURLWithPath: executablePath)
-            process.arguments = args + ["--json"]
-            process.standardOutput = pipe
-            process.standardError = pipe
-
-            try process.run()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            process.waitUntilExit()
-            guard process.terminationReason == .exit, process.terminationStatus == 0 else {
-                let message = String(data: data, encoding: .utf8) ?? "CLI failed"
-                throw CLIError.failed(status: process.terminationStatus, message: message)
-            }
-            return data
-        }.value
+        return try await CLIProcess.run(path: executablePath, arguments: args + ["--json"])
     }
 
     private func resolvedCLIPath() throws -> String {
-        var candidates: [URL] = []
-        if !cliPath.isEmpty {
-            candidates.append(URL(fileURLWithPath: cliPath))
-        }
+        var paths = [cliPath]
         if let bundled = Bundle.main.url(forResource: "sekretsauce", withExtension: nil) {
-            candidates.append(bundled)
+            paths.append(bundled.path)
         }
-        candidates.append(URL(fileURLWithPath: "/opt/homebrew/bin/sekretsauce"))
-        candidates.append(URL(fileURLWithPath: "/usr/local/bin/sekretsauce"))
-
-        for candidate in candidates {
-            let resolved = candidate.resolvingSymlinksInPath()
-            var isDirectory: ObjCBool = false
-            if FileManager.default.fileExists(atPath: resolved.path, isDirectory: &isDirectory),
-               !isDirectory.boolValue,
-               FileManager.default.isExecutableFile(atPath: resolved.path) {
-                return resolved.path
-            }
+        paths += ["/opt/homebrew/bin/sekretsauce", "/usr/local/bin/sekretsauce"]
+        for path in paths where !path.isEmpty {
+            let url = URL(fileURLWithPath: path).resolvingSymlinksInPath()
+            if FileManager.default.isExecutableFile(atPath: url.path) { return url.path }
         }
         throw CLIError.notFound
     }
 
-    // MARK: - Full Scan
-
-    func runFullScan() {
-        Task {
-            isScanning = true
-            scanStatus = "Starting full scan..."
-
-            findings.removeAll()
-            await performKeychainScan()
-            await performHiddenScan()
-            await performAppsScan()
-            scanStatus = "Scan complete!"
-
-            isScanning = false
-        }
-    }
-
-    // MARK: - Browser Export
-
-    func exportBrowser(_ browser: String) {
-        Task {
-            isScanning = true
-            scanStatus = "Exporting browser data..."
-
-            do {
-                var args = ["export"]
-                if browser != "all" {
-                    args.append(browser)
+    private func start(_ label: String, operation: @escaping @MainActor () async throws -> Void) {
+        guard !isScanning else { return }
+        let id = UUID()
+        runID = id
+        isScanning = true
+        scanStatus = label
+        scanTask = Task { [self] in
+            defer {
+                if runID == id {
+                    isScanning = false
+                    scanTask = nil
+                    runID = nil
                 }
-
-                let data = try await runCLI(args: args)
-
-                if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                    var results: [BrowserResult] = []
-
-                    for (browserName, value) in json {
-                        if let browserData = value as? [String: Any],
-                           let profilesData = browserData["profiles"] as? [[String: Any]] {
-                            var profiles: [BrowserProfile] = []
-                            for profileData in profilesData {
-                                let name = profileData["name"] as? String ?? "Unknown"
-                                let bookmarks = (profileData["bookmarks"] as? [Any])?.count ?? 0
-                                let history = (profileData["history"] as? [Any])?.count ?? 0
-                                profiles.append(BrowserProfile(name: name, bookmarkCount: bookmarks, historyCount: history))
-                            }
-                            results.append(BrowserResult(browser: browserName, profiles: profiles))
-                        }
-                    }
-
-                    browserResults = results
-                }
-            } catch {
-                scanStatus = "Export failed: \(error.localizedDescription)"
             }
-
-            isScanning = false
+            do {
+                try await operation()
+            } catch is CancellationError {
+                scanStatus = "Scan cancelled. Results were not replaced."
+            } catch {
+                scanStatus = "Scan failed: \(error.localizedDescription)"
+            }
         }
     }
 
-    // Helper initializer for BrowserProfile
-    init() {}
+    func cancelScan() { scanTask?.cancel() }
 
-    // MARK: - Keychain Scan
+    func runFullScan() { runScan(profile: "full") }
+    func runQuickScan() { runScan(profile: "quick") }
+
+    private func runScan(profile: String) {
+        start("Running \(profile) scan...") { [self] in
+            let data = try await runCLI(args: ["scan", "--profile", profile])
+            let report = try ScanReport.decode(data)
+            let raw = try object(data)
+            try Task.checkCancellation()
+            // Validate and stage all data before publishing this snapshot.
+            applyKeychain(raw["keychain"] as? [String: Any] ?? [:])
+            applyHidden(raw["hidden_processes"] as? [String: Any] ?? [:])
+            applyApps(raw["applications"] as? [String: Any] ?? [:])
+            components = report.components
+            findings = report.findings.map {
+                Finding(title: $0.title, category: $0.category, severity: $0.severity)
+            }
+            changes = ScanChanges.compare(history: scanHistory, current: report)
+            let failures = report.components.filter { $0.status == "failed" || $0.status == "partial" }
+                .map(\.scannerID)
+            scanStatus =
+                failures.isEmpty
+                ? "Scan completed (\(profile))."
+                : "Scan \(report.status): \(failures.joined(separator: ", ")) unavailable."
+            do {
+                try history.save(report)
+                scanHistory = try history.load()
+            } catch { scanStatus += " History could not be saved: \(error.localizedDescription)" }
+        }
+    }
 
     func scanKeychain() {
-        Task {
-            await performKeychainScan()
-        }
-    }
-
-    private func performKeychainScan() async {
-        isScanning = true
-        scanStatus = "Scanning Keychain..."
-        findings.removeAll { $0.category == "Keychain" }
-
-        do {
-            let data = try await runCLI(args: ["scan", "keychain"])
-
-            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                    keychainCount = json["total_items"] as? Int ?? 0
-
-                    if let items = json["items"] as? [[String: Any]] {
-                        keychainItems = items.map { item in
-                            KeychainItem(
-                                itemClass: item["item_class"] as? String ?? "",
-                                service: item["service"] as? String ?? item["server"] as? String ?? "",
-                                account: item["account"] as? String ?? "",
-                                isWeak: false
-                            )
-                        }
-                    }
-
-                    if let weakItems = json["weak_items"] as? [[String: Any]] {
-                        for weakItem in weakItems {
-                            if let item = weakItem["item"] as? [String: Any],
-                               let service = item["service"] as? String ?? item["server"] as? String,
-                               let reason = weakItem["reason"] as? String {
-                                findings.append(Finding(
-                                    title: "\(service): \(reason)",
-                                    category: "Keychain",
-                                    severity: weakItem["severity"] as? String ?? "medium"
-                                ))
-                            }
-                        }
-                    }
+        start("Scanning Keychain...") { [self] in
+            let json = try await scanObject(["scan", "keychain"], required: "total_items")
+            applyKeychain(json)
+            findings.removeAll { $0.category == "Keychain" }
+            for weak in rows(json, "weak_items") {
+                let item = weak["item"] as? [String: Any] ?? [:]
+                findings.append(
+                    Finding(
+                        title: "\(string(item, "service")): \(string(weak, "reason"))", category: "Keychain",
+                        severity: string(weak, "severity", fallback: "medium")))
             }
-        } catch {
-            scanStatus = "Keychain scan failed: \(error.localizedDescription)"
-        }
-        isScanning = false
-    }
-
-    // MARK: - Certificate Check
-
-    func checkCertificates(_ domain: String) {
-        Task {
-            isScanning = true
-            scanStatus = "Checking certificates for \(domain)..."
-
-            do {
-                let data = try await runCLI(args: ["scan", "certs", "--domain", domain])
-
-                if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                    if let certs = json["certificates"] as? [[String: Any]] {
-                        certificates = certs.map { cert in
-                            Certificate(
-                                subject: cert["subject"] as? String ?? "",
-                                issuer: cert["issuer"] as? String ?? "",
-                                serialNumber: cert["serial_number"] as? String ?? "",
-                                notBefore: cert["not_before"] as? String ?? "",
-                                notAfter: cert["not_after"] as? String ?? "",
-                                isSuspicious: false
-                            )
-                        }
-                    }
-
-                    if let suspicious = json["suspicious"] as? [[String: Any]] {
-                        for sus in suspicious {
-                            if let cert = sus["certificate"] as? [String: Any],
-                               let reason = sus["reason"] as? String {
-                                findings.append(Finding(
-                                    title: "\(cert["issuer"] ?? "Unknown"): \(reason)",
-                                    category: "Certificates",
-                                    severity: sus["severity"] as? String ?? "medium"
-                                ))
-                            }
-                        }
-                    }
-                }
-            } catch {
-                scanStatus = "Certificate check failed: \(error.localizedDescription)"
-            }
-
-            isScanning = false
+            scanStatus = "Keychain scan completed."
         }
     }
 
-    // MARK: - Hidden Scan
+    private func applyKeychain(_ json: [String: Any]) {
+        keychainCount = json["total_items"] as? Int ?? 0
+        keychainItems = rows(json, "items").map { x in
+            KeychainItem(
+                itemClass: string(x, "item_class"),
+                service: string(x, "service", fallback: string(x, "server")), account: string(x, "account"),
+                isWeak: false)
+        }
+    }
 
     func scanHidden() {
-        Task {
-            await performHiddenScan()
-        }
-    }
-
-    private func performHiddenScan() async {
-        isScanning = true
-        scanStatus = "Hunting hidden processes..."
-        findings.removeAll { $0.category == "Processes" || $0.category == "Launch Agents" }
-
-        do {
-            let data = try await runCLI(args: ["scan", "hidden"])
-
-            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                    launchAgentCount = json["launch_agents_checked"] as? Int ?? 0
-
-                    if let procs = json["suspicious_processes"] as? [[String: Any]] {
-                        suspiciousProcesses = procs.map { proc in
-                            SuspiciousProcess(
-                                pid: proc["pid"] as? Int ?? 0,
-                                name: proc["name"] as? String ?? "",
-                                path: proc["path"] as? String ?? "",
-                                reason: proc["suspicion_reason"] as? String ?? "",
-                                severity: proc["severity"] as? String ?? "medium"
-                            )
-                        }
-
-                        for proc in suspiciousProcesses {
-                            findings.append(Finding(
-                                title: "PID \(proc.pid): \(proc.reason)",
-                                category: "Processes",
-                                severity: proc.severity
-                            ))
-                        }
-                    }
-
-                    if let agents = json["suspicious_launch_agents"] as? [[String: Any]] {
-                        suspiciousAgents = agents.map { agent in
-                            SuspiciousAgent(
-                                label: agent["label"] as? String ?? "",
-                                program: agent["program"] as? String ?? "",
-                                reason: agent["suspicion_reason"] as? String ?? "",
-                                severity: agent["severity"] as? String ?? "medium"
-                            )
-                        }
-
-                        for agent in suspiciousAgents {
-                            findings.append(Finding(
-                                title: "\(agent.label): \(agent.reason)",
-                                category: "Launch Agents",
-                                severity: agent.severity
-                            ))
-                        }
-                    }
+        start("Scanning processes and launch agents...") { [self] in
+            let json = try await scanObject(["scan", "hidden"], required: "processes_scanned")
+            applyHidden(json)
+            findings.removeAll { ["Processes", "Launch Agents"].contains($0.category) }
+            findings += suspiciousProcesses.map {
+                Finding(title: "PID \($0.pid): \($0.reason)", category: "Processes", severity: $0.severity)
             }
-        } catch {
-            scanStatus = "Hidden scan failed: \(error.localizedDescription)"
+            findings += suspiciousAgents.map {
+                Finding(
+                    title: "\($0.label): \($0.reason)", category: "Launch Agents", severity: $0.severity)
+            }
+            scanStatus = "Process scan completed."
         }
-        isScanning = false
     }
 
-    // MARK: - App Scan
+    private func applyHidden(_ json: [String: Any]) {
+        launchAgentCount = json["launch_agents_checked"] as? Int ?? 0
+        suspiciousProcesses = rows(json, "suspicious_processes").map { x in
+            SuspiciousProcess(
+                pid: x["pid"] as? Int ?? 0, name: string(x, "name"), path: string(x, "path"),
+                reason: string(x, "suspicion_reason"), severity: string(x, "severity", fallback: "medium"))
+        }
+        suspiciousAgents = rows(json, "suspicious_launch_agents").map { x in
+            SuspiciousAgent(
+                label: string(x, "label"), program: string(x, "program"),
+                reason: string(x, "suspicion_reason"), severity: string(x, "severity", fallback: "medium"))
+        }
+    }
 
     func scanApps() {
-        Task {
-            await performAppsScan()
-        }
-    }
-
-    private func performAppsScan() async {
-        isScanning = true
-        scanStatus = "Inspecting applications..."
-        let previousCategories = Set(appIssues.map(\.category))
-        findings.removeAll { previousCategories.contains($0.category) }
-
-        do {
-            let data = try await runCLI(args: ["scan", "apps"])
-
-            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                    appCount = json["total_apps"] as? Int ?? 0
-
-                    if let issues = json["issues"] as? [[String: Any]] {
-                        appIssues = issues.map { issue in
-                            AppIssue(
-                                appName: issue["app_name"] as? String ?? "",
-                                category: issue["category"] as? String ?? "",
-                                description: issue["description"] as? String ?? "",
-                                severity: issue["severity"] as? String ?? "medium"
-                            )
-                        }
-
-                        for issue in appIssues {
-                            findings.append(Finding(
-                                title: "\(issue.appName): \(issue.description)",
-                                category: issue.category,
-                                severity: issue.severity
-                            ))
-                        }
-                    }
+        start("Inspecting applications...") { [self] in
+            let json = try await scanObject(["scan", "apps"], required: "total_apps")
+            let categories = Set(appIssues.map(\.category))
+            applyApps(json)
+            findings.removeAll { categories.contains($0.category) }
+            findings += appIssues.map {
+                Finding(
+                    title: "\($0.appName): \($0.description)", category: $0.category, severity: $0.severity)
             }
-        } catch {
-            scanStatus = "App scan failed: \(error.localizedDescription)"
+            scanStatus = "Application scan completed."
         }
-        isScanning = false
     }
 
-    // MARK: - Breach Check
+    private func applyApps(_ json: [String: Any]) {
+        appCount = json["total_apps"] as? Int ?? 0
+        appIssues = rows(json, "issues").map { x in
+            AppIssue(
+                appName: string(x, "app_name"), category: string(x, "category"),
+                description: string(x, "description"), severity: string(x, "severity", fallback: "medium"))
+        }
+    }
 
     func checkBreach(email: String? = nil, domain: String? = nil) {
-        Task {
-            isScanning = true
-            breachCheckComplete = false
-            scanStatus = "Checking for breaches..."
-
-            do {
-                var args = ["scan", "breach"]
-                if let email = email {
-                    args += ["--email", email]
-                } else if let domain = domain {
-                    args += ["--domain", domain]
-                }
-
-                let data = try await runCLI(args: args)
-
-                if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                    if let compromised = json["compromised"] as? [[String: Any]] {
-                        breaches = compromised.map { item in
-                            BreachResult(
-                                account: item["account"] as? String ?? "",
-                                breachNames: item["breach_names"] as? [String] ?? [],
-                                dataTypes: item["data_types"] as? [String] ?? []
-                            )
-                        }
-
-                        for breach in breaches {
-                            findings.append(Finding(
-                                title: "\(breach.account): Found in \(breach.breachNames.count) breach(es)",
-                                category: "Breach",
-                                severity: "critical"
-                            ))
-                        }
-                    }
-                }
-
-                breachCheckComplete = true
-            } catch {
-                scanStatus = "Breach check failed: \(error.localizedDescription)"
+        guard !isScanning else { return }
+        breachCheckComplete = false
+        start("Checking breaches...") { [self] in
+            var args = ["scan", "breach"]
+            if let email {
+                args += ["--email", email]
+            } else if let domain {
+                args += ["--domain", domain]
             }
-
-            isScanning = false
+            let json = try await scanObject(args, required: "total_checked")
+            breaches = rows(json, "compromised").map { x in
+                BreachResult(
+                    account: string(x, "account"), breachNames: x["breach_names"] as? [String] ?? [],
+                    dataTypes: x["data_types"] as? [String] ?? [])
+            }
+            findings.removeAll { $0.category == "Breach" }
+            findings += breaches.map {
+                Finding(
+                    title: "\($0.account): Found in \($0.breachNames.count) breach(es)", category: "Breach",
+                    severity: "critical")
+            }
+            breachCheckComplete = true
+            scanStatus = "Breach check completed."
         }
+    }
+
+    func checkCertificates(_ domain: String) {
+        start("Checking certificates...") { [self] in
+            let json = try await scanObject(["scan", "certs", "--domain", domain], required: "domain")
+            certificates = rows(json, "certificates").map { x in
+                Certificate(
+                    subject: string(x, "subject"), issuer: string(x, "issuer"),
+                    serialNumber: string(x, "serial_number"), notBefore: string(x, "not_before"),
+                    notAfter: string(x, "not_after"), isSuspicious: false)
+            }
+            findings.removeAll { $0.category == "Certificates" }
+            findings += rows(json, "suspicious").map {
+                Finding(
+                    title: string($0, "reason"), category: "Certificates",
+                    severity: string($0, "severity", fallback: "medium"))
+            }
+            scanStatus = "Certificate check completed."
+        }
+    }
+
+    func exportBrowser(_ browser: String) {
+        start("Exporting browser data...") { [self] in
+            let data = try await runCLI(args: browser == "all" ? ["export"] : ["export", browser])
+            let json = try object(data)
+            try Task.checkCancellation()
+            browserResults = try json.keys.sorted().map { name in
+                guard let value = json[name] as? [String: Any],
+                    let profiles = value["profiles"] as? [[String: Any]]
+                else { throw CLIError.invalidResponse }
+                return BrowserResult(
+                    browser: name,
+                    profiles: profiles.map {
+                        BrowserProfile(
+                            name: string($0, "name"), bookmarkCount: ($0["bookmarks"] as? [Any])?.count ?? 0,
+                            historyCount: ($0["history"] as? [Any])?.count ?? 0)
+                    })
+            }
+            scanStatus = "Browser export completed."
+        }
+    }
+
+    private func scanObject(_ args: [String], required: String) async throws -> [String: Any] {
+        let data = try await runCLI(args: args)
+        let json = try object(data)
+        if required == "domain" {
+            guard json[required] is String else { throw CLIError.invalidResponse }
+        } else {
+            guard json[required] is Int else { throw CLIError.invalidResponse }
+        }
+        for key in [
+            "items", "weak_items", "issues", "compromised", "certificates", "suspicious",
+            "suspicious_processes", "suspicious_launch_agents",
+        ] {
+            if let value = json[key], !(value is NSNull), !(value is [[String: Any]]) {
+                throw CLIError.invalidResponse
+            }
+        }
+        try Task.checkCancellation()
+        return json
+    }
+    private func object(_ data: Data) throws -> [String: Any] {
+        guard let result = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw CLIError.invalidResponse
+        }
+        return result
+    }
+    private func rows(_ json: [String: Any], _ key: String) -> [[String: Any]] {
+        json[key] as? [[String: Any]] ?? []
+    }
+    private func string(_ json: [String: Any], _ key: String, fallback: String = "") -> String {
+        json[key] as? String ?? fallback
     }
 }
 
-private enum CLIError: LocalizedError {
-    case failed(status: Int32, message: String)
+enum CLIError: LocalizedError {
+    case failed(Int32)
     case notFound
-
+    case invalidResponse
+    case timeout
     var errorDescription: String? {
         switch self {
-        case let .failed(status, message):
-            return "CLI exited with status \(status): \(message)"
-        case .notFound:
-            return "SeKretSauce CLI not found. Install it or set the CLI path in preferences."
+        case .failed(let code): return "CLI exited with status \(code)."
+        case .notFound: return "SeKretSauce CLI not found. Install it or set its path in preferences."
+        case .invalidResponse:
+            return "CLI returned an invalid or unsupported report. Update the CLI and try again."
+        case .timeout: return "CLI exceeded the operation deadline."
         }
     }
 }
 
-// Extension to create BrowserProfile directly
 extension BrowserProfile {
     init(name: String, bookmarkCount: Int, historyCount: Int) {
         self.name = name

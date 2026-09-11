@@ -1,9 +1,12 @@
 package cmd
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/afterdarktech/sekretsauce/pkg/breach"
 	"github.com/afterdarktech/sekretsauce/pkg/ca"
@@ -15,6 +18,8 @@ import (
 	"github.com/afterdarktech/sekretsauce/pkg/wallet"
 	"github.com/spf13/cobra"
 )
+
+var scanProfile = "full"
 
 var scanCmd = &cobra.Command{
 	Use:   "scan",
@@ -97,6 +102,7 @@ var (
 
 func init() {
 	rootCmd.AddCommand(scanCmd)
+	scanCmd.Flags().StringVar(&scanProfile, "profile", "full", "Scan scope: quick (Keychain, processes, apps) or full")
 	scanCmd.AddCommand(scanKeychainCmd)
 	scanCmd.AddCommand(scanCertsCmd)
 	scanCmd.AddCommand(scanHiddenCmd)
@@ -137,6 +143,16 @@ func init() {
 
 // ScanResults holds all scan results for JSON output
 type ScanResults struct {
+	Target        string          `json:"target"`
+	SchemaVersion int             `json:"schema_version"`
+	RunID         string          `json:"run_id"`
+	Profile       string          `json:"profile"`
+	StartedAt     string          `json:"started_at"`
+	FinishedAt    string          `json:"finished_at"`
+	Status        string          `json:"status"`
+	Components    []ScanComponent `json:"components"`
+	Findings      []Finding       `json:"findings"`
+
 	Keychain *keychain.ScanResult  `json:"keychain,omitempty"`
 	Certs    *certs.ScanResult     `json:"certificates,omitempty"`
 	Hidden   *hunter.ScanResult    `json:"hidden_processes,omitempty"`
@@ -156,170 +172,101 @@ type ScanSummary struct {
 }
 
 func runFullScan(cmd *cobra.Command, args []string) error {
-	printSection("SeKretSauce Full Security Scan")
-
-	results := &ScanResults{
-		Summary: &ScanSummary{
-			Recommendations: []string{},
-		},
+	if scanProfile != "quick" && scanProfile != "full" {
+		return fmt.Errorf("--profile must be quick or full")
 	}
-
-	// Keychain scan
-	printInfo("Scanning Keychain...")
-	if kcResult, err := keychain.Scan(keychain.ScanOptions{Deep: scanDeep}); err != nil {
-		printWarning(fmt.Sprintf("Keychain scan: %v", err))
-	} else {
-		results.Keychain = kcResult
-		printSuccess(fmt.Sprintf("Found %d keychain items", kcResult.TotalItems))
+	id := make([]byte, 16)
+	if _, err := rand.Read(id); err != nil {
+		return err
 	}
-
-	// Hidden process scan
-	printInfo("Hunting hidden processes...")
-	if hiddenResult, err := hunter.Scan(hunter.ScanOptions{Deep: scanDeep}); err != nil {
-		printWarning(fmt.Sprintf("Hidden scan: %v", err))
-	} else {
-		results.Hidden = hiddenResult
-		if len(hiddenResult.SuspiciousProcesses) > 0 {
-			printWarning(fmt.Sprintf("Found %d suspicious processes", len(hiddenResult.SuspiciousProcesses)))
-			results.Summary.Warnings += len(hiddenResult.SuspiciousProcesses)
+	host, _ := os.Hostname()
+	results := &ScanResults{Target: fmt.Sprintf("%s:%d", host, os.Getuid()), SchemaVersion: 1, RunID: hex.EncodeToString(id), Profile: scanProfile, StartedAt: time.Now().UTC().Format(time.RFC3339Nano), Components: []ScanComponent{}, Summary: &ScanSummary{}}
+	record := func(id string, run func() error) {
+		if err := cmd.Context().Err(); err != nil {
+			results.addComponent(id, "failed", []string{err.Error()}, "")
+			return
+		}
+		started := time.Now()
+		if err := run(); err != nil {
+			results.addComponent(id, "failed", []string{err.Error()}, "")
 		} else {
-			printSuccess("No suspicious processes found")
+			results.addComponent(id, "completed", nil, "")
+		}
+		if verbose {
+			fmt.Fprintf(os.Stderr, "scanner=%s duration=%s\n", id, time.Since(started))
 		}
 	}
-
-	// App inspection
-	printInfo("Inspecting applications...")
-	if appResult, err := inspector.Scan(inspector.ScanOptions{
-		IncludeSystem: includeSysApps,
-		ScanAll:       scanAllApps,
-	}); err != nil {
-		printWarning(fmt.Sprintf("App scan: %v", err))
+	record("keychain", func() error {
+		var e error
+		results.Keychain, e = keychain.Scan(keychain.ScanOptions{Deep: scanDeep})
+		return e
+	})
+	record("hidden", func() error {
+		var e error
+		results.Hidden, e = hunter.Scan(hunter.ScanOptions{Deep: scanDeep})
+		return e
+	})
+	record("apps", func() error {
+		var e error
+		results.Apps, e = inspector.Scan(inspector.ScanOptions{IncludeSystem: includeSysApps, ScanAll: scanAllApps})
+		return e
+	})
+	if scanProfile == "full" {
+		record("secrets", func() error { var e error; results.Secrets, e = secrets.ScanHomeDirectory(); return e })
+		record("wallets", func() error {
+			var e error
+			results.Wallets, e = wallet.Scan(wallet.ScanOptions{ScanHome: true, ScanCommon: true})
+			return e
+		})
+		record("cas", func() error {
+			var e error
+			results.CAs, e = ca.Scan(ca.ScanOptions{IncludeSystem: true, IncludeUser: true})
+			return e
+		})
 	} else {
-		results.Apps = appResult
-		printSuccess(fmt.Sprintf("Scanned %d applications", appResult.TotalApps))
-		if len(appResult.Issues) > 0 {
-			results.Summary.Warnings += len(appResult.Issues)
+		for _, id := range []string{"secrets", "wallets", "cas"} {
+			results.addComponent(id, "skipped", nil, "Not included in quick scan")
 		}
 	}
-
-	// Breach check (if we found credentials and flag is set)
 	if checkBreaches && results.Keychain != nil {
-		printInfo("Checking for breached credentials...")
-		if breachResult, err := breach.CheckCredentials(results.Keychain.Items); err != nil {
-			printWarning(fmt.Sprintf("Breach check: %v", err))
-		} else {
-			results.Breaches = breachResult
-			if len(breachResult.Compromised) > 0 {
-				printError(fmt.Sprintf("ALERT: %d compromised accounts found!", len(breachResult.Compromised)))
-				results.Summary.CriticalIssues += len(breachResult.Compromised)
-			} else {
-				printSuccess("No breached credentials detected")
+		record("breach", func() error {
+			var e error
+			results.Breaches, e = breach.CheckCredentials(results.Keychain.Items)
+			if e == nil && len(results.Breaches.Errors) > 0 {
+				return fmt.Errorf("%d account lookups failed", len(results.Breaches.Errors))
 			}
-		}
-	}
-
-	// Secrets scan
-	printInfo("Scanning for exposed secrets...")
-	if secretsResult, err := secrets.ScanHomeDirectory(); err != nil {
-		printWarning(fmt.Sprintf("Secrets scan: %v", err))
+			return e
+		})
+	} else if checkBreaches {
+		results.addComponent("breach", "failed", []string{"Keychain prerequisite unavailable"}, "")
 	} else {
-		results.Secrets = secretsResult
-		if secretsResult.Summary.CriticalFindings > 0 {
-			printError(fmt.Sprintf("Found %d exposed secrets!", secretsResult.Summary.CriticalFindings))
-			results.Summary.CriticalIssues += secretsResult.Summary.CriticalFindings
-		} else if len(secretsResult.SecretsFound) > 0 {
-			printWarning(fmt.Sprintf("Found %d potential secrets", len(secretsResult.SecretsFound)))
-			results.Summary.Warnings += len(secretsResult.SecretsFound)
-		} else {
-			printSuccess("No exposed secrets found")
-		}
+		results.addComponent("breach", "skipped", nil, "Account lookups require --check-breaches")
 	}
-
-	// Wallet scan
-	printInfo("Scanning for cryptocurrency wallets...")
-	if walletResult, err := wallet.Scan(wallet.ScanOptions{
-		ScanHome:   true,
-		ScanCommon: true,
-	}); err != nil {
-		printWarning(fmt.Sprintf("Wallet scan: %v", err))
-	} else {
-		results.Wallets = walletResult
-		if len(walletResult.SeedPhrases) > 0 {
-			printError(fmt.Sprintf("CRITICAL: Found %d seed phrases in plaintext!", len(walletResult.SeedPhrases)))
-			results.Summary.CriticalIssues += len(walletResult.SeedPhrases)
-		}
-		if len(walletResult.WalletsFound) > 0 {
-			printSuccess(fmt.Sprintf("Found %d cryptocurrency wallets", len(walletResult.WalletsFound)))
-		} else {
-			printSuccess("No cryptocurrency wallets found")
-		}
-	}
-
-	// CA certificate scan
-	printInfo("Auditing CA certificates...")
-	if caResult, err := ca.Scan(ca.ScanOptions{
-		IncludeSystem: true,
-		IncludeUser:   true,
-	}); err != nil {
-		printWarning(fmt.Sprintf("CA scan: %v", err))
-	} else {
-		results.CAs = caResult
-		if len(caResult.SuspiciousCAs) > 0 {
-			for _, sus := range caResult.SuspiciousCAs {
-				if sus.Severity == "critical" || sus.Severity == "high" {
-					results.Summary.CriticalIssues++
-				} else {
-					results.Summary.Warnings++
-				}
-			}
-			printWarning(fmt.Sprintf("Found %d suspicious CA certificates", len(caResult.SuspiciousCAs)))
-		} else {
-			printSuccess(fmt.Sprintf("Scanned %d CA certificates", caResult.Summary.TotalCAs))
-		}
-	}
-
-	// Calculate summary
-	results.Summary.TotalFindings = results.Summary.CriticalIssues + results.Summary.Warnings
-
-	// Generate recommendations
-	if results.Summary.CriticalIssues > 0 {
-		results.Summary.Recommendations = append(results.Summary.Recommendations,
-			"Change passwords for all compromised accounts immediately")
-	}
-	if results.Hidden != nil && len(results.Hidden.SuspiciousLaunchAgents) > 0 {
-		results.Summary.Recommendations = append(results.Summary.Recommendations,
-			"Review and remove suspicious launch agents")
-	}
-	if results.Secrets != nil && results.Secrets.Summary.CriticalFindings > 0 {
-		results.Summary.Recommendations = append(results.Summary.Recommendations,
-			"Rotate all exposed API keys and secrets immediately")
-	}
-	if results.Wallets != nil && len(results.Wallets.SeedPhrases) > 0 {
-		results.Summary.Recommendations = append(results.Summary.Recommendations,
-			"URGENT: Move seed phrases to secure storage and transfer funds to new wallets")
-	}
-	if results.CAs != nil && results.CAs.Summary.SuspiciousCAs > 0 {
-		results.Summary.Recommendations = append(results.Summary.Recommendations,
-			"Review and remove suspicious CA certificates")
-	}
-
-	// Output
+	results.addComponent("certs", "skipped", nil, "Use scan certs --domain for an explicit domain lookup")
+	results.normalize()
 	if outputJSON {
-		return outputAsJSON(results)
-	}
-
-	printSection("Scan Summary")
-	fmt.Printf("Total findings: %d\n", results.Summary.TotalFindings)
-	fmt.Printf("Critical issues: %d\n", results.Summary.CriticalIssues)
-	fmt.Printf("Warnings: %d\n", results.Summary.Warnings)
-
-	if len(results.Summary.Recommendations) > 0 {
-		fmt.Println("\nRecommendations:")
+		if err := outputAsJSON(results); err != nil {
+			return err
+		}
+	} else {
+		fmt.Printf("Scan %s\nTotal findings: %d\nCritical issues: %d\nWarnings: %d\n", results.Status, results.Summary.TotalFindings, results.Summary.CriticalIssues, results.Summary.Warnings)
+		for _, c := range results.Components {
+			fmt.Printf("%s: %s", c.ScannerID, c.Status)
+			if len(c.Errors) > 0 {
+				fmt.Printf(" (%s)", c.Errors[0])
+			}
+			if c.SkippedReason != "" {
+				fmt.Printf(" (%s)", c.SkippedReason)
+			}
+			fmt.Println()
+		}
 		for _, rec := range results.Summary.Recommendations {
-			fmt.Printf("  • %s\n", rec)
+			fmt.Println("-", rec)
 		}
 	}
-
+	if results.Status != "completed" {
+		return &IncompleteScanError{Status: results.Status}
+	}
 	return nil
 }
 

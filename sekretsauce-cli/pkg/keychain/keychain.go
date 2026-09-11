@@ -3,6 +3,7 @@ package keychain
 import (
 	"bufio"
 	"bytes"
+	"fmt"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -47,72 +48,41 @@ type WeakItem struct {
 
 // Scan performs a keychain security scan using the security command
 func Scan(opts ScanOptions) (*ScanResult, error) {
-	result := &ScanResult{
-		Items:     []KeychainItem{},
-		WeakItems: []WeakItem{},
+	return scanWithDump(func() ([]byte, error) {
+		return exec.Command("security", "dump-keychain").Output()
+	})
+}
+
+// A single failed dump is unavailable coverage, not an empty successful scan.
+func scanWithDump(dump func() ([]byte, error)) (*ScanResult, error) {
+	data, err := dump()
+	if err != nil {
+		return nil, fmt.Errorf("read Keychain metadata: %w", err)
 	}
-
-	// Dump generic passwords (metadata only)
-	genericItems, err := dumpKeychainItems("genp")
-	if err == nil {
-		for _, item := range genericItems {
-			item.ItemClass = "generic_password"
+	result := &ScanResult{Items: []KeychainItem{}, WeakItems: []WeakItem{}}
+	for _, category := range []struct{ raw, name string }{
+		{"genp", "generic_password"}, {"inet", "internet_password"},
+		{"cert", "certificate"}, {"keys", "key"}, {"idnt", "identity"},
+	} {
+		for _, item := range parseKeychainDump(data, category.raw) {
+			item.ItemClass = category.name
 			result.Items = append(result.Items, item)
-			result.PasswordItems++
-
-			// Check for weak patterns
-			if weak := checkWeakItem(item); weak != nil {
-				result.WeakItems = append(result.WeakItems, *weak)
+			switch category.raw {
+			case "genp", "inet":
+				result.PasswordItems++
+				if weak := checkWeakItem(item); weak != nil {
+					result.WeakItems = append(result.WeakItems, *weak)
+				}
+			case "cert":
+				result.CertificateItems++
+			case "keys":
+				result.KeyItems++
+			case "idnt":
+				result.IdentityItems++
 			}
 		}
 	}
-
-	// Dump internet passwords
-	internetItems, err := dumpKeychainItems("inet")
-	if err == nil {
-		for _, item := range internetItems {
-			item.ItemClass = "internet_password"
-			result.Items = append(result.Items, item)
-			result.PasswordItems++
-
-			if weak := checkWeakItem(item); weak != nil {
-				result.WeakItems = append(result.WeakItems, *weak)
-			}
-		}
-	}
-
-	// Dump certificates
-	certItems, err := dumpKeychainItems("cert")
-	if err == nil {
-		for _, item := range certItems {
-			item.ItemClass = "certificate"
-			result.Items = append(result.Items, item)
-			result.CertificateItems++
-		}
-	}
-
-	// Dump keys
-	keyItems, err := dumpKeychainItems("keys")
-	if err == nil {
-		for _, item := range keyItems {
-			item.ItemClass = "key"
-			result.Items = append(result.Items, item)
-			result.KeyItems++
-		}
-	}
-
-	// Dump identities
-	idItems, err := dumpKeychainItems("idnt")
-	if err == nil {
-		for _, item := range idItems {
-			item.ItemClass = "identity"
-			result.Items = append(result.Items, item)
-			result.IdentityItems++
-		}
-	}
-
 	result.TotalItems = len(result.Items)
-
 	return result, nil
 }
 

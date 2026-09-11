@@ -1,5 +1,5 @@
-import SwiftUI
 import AVFoundation
+import SwiftUI
 
 struct ContentView: View {
     @StateObject private var viewModel = SeKretSauceViewModel()
@@ -24,6 +24,7 @@ enum ScanTab: String, CaseIterable, Identifiable {
     case apps = "App Inspector"
     case breach = "Breach Check"
     case privacy = "Camera & Microphone"
+    case incidents = "Incidents"
     case ransomware = "Ransomware Shield"
 
     var id: String { rawValue }
@@ -38,6 +39,7 @@ enum ScanTab: String, CaseIterable, Identifiable {
         case .apps: return "app.badge.checkmark"
         case .breach: return "exclamationmark.triangle.fill"
         case .privacy: return "video.badge.checkmark"
+        case .incidents: return "exclamationmark.shield"
         case .ransomware: return "lock.doc.fill"
         }
     }
@@ -79,6 +81,8 @@ struct DetailView: View {
                 BreachCheckView(viewModel: viewModel)
             case .privacy:
                 PrivacyControlsView()
+            case .incidents:
+                IncidentView()
             case .ransomware:
                 RansomwareShieldView()
             }
@@ -96,15 +100,17 @@ struct RansomwareShieldView: View {
                 .font(.title)
                 .fontWeight(.bold)
 
-            Text("The daemon correlates rapid document changes, suspicious execution, persistence changes, ransomware extensions, and protected canary files. Signed bulk editors are reported without being automatically suspended.")
-                .foregroundStyle(.secondary)
+            Text(
+                "The daemon correlates document changes, execution, and canary activity. Protection requires a running sensor; installed files alone do not establish protection."
+            )
+            .foregroundStyle(.secondary)
 
             HStack {
                 Image(systemName: controls.canaryInstalled ? "checkmark.shield.fill" : "shield.slash")
                     .font(.largeTitle)
-                    .foregroundStyle(controls.canaryInstalled ? .green : .orange)
+                    .foregroundStyle(controls.canaryInstalled && controls.sensorActive ? .green : .orange)
                 VStack(alignment: .leading) {
-                    Text(controls.canaryInstalled ? "Canary protection installed" : "Canary protection not installed")
+                    Text(controls.canaryInstalled ? "Canary files installed" : "Canary files not installed")
                         .font(.headline)
                     Text("Behavioral monitoring runs in the privileged security agent.")
                         .foregroundStyle(.secondary)
@@ -114,9 +120,21 @@ struct RansomwareShieldView: View {
                     controls.installCanaries()
                 }
                 .buttonStyle(.borderedProminent)
+                .disabled(controls.busy)
             }
             .padding()
             .background(RoundedRectangle(cornerRadius: 12).fill(.background))
+            if let health = controls.health {
+                ForEach(health.components, id: \.id) { component in
+                    VStack(alignment: .leading) {
+                        Text("\(component.id): \(component.state)")
+                        if !component.reason.isEmpty { Text(component.reason).font(.caption) }
+                    }
+                }
+                Text("Events received: \(health.eventsReceived); dropped: \(health.eventsDropped)")
+                    .font(.caption)
+            }
+            Button("Refresh Agent Status", action: controls.refresh).disabled(controls.busy)
 
             if !controls.statusMessage.isEmpty {
                 Text(controls.statusMessage)
@@ -126,7 +144,12 @@ struct RansomwareShieldView: View {
             Spacer()
         }
         .padding()
-        .onAppear { controls.refresh() }
+        .task {
+            while !Task.isCancelled {
+                controls.refresh()
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+            }
+        }
     }
 }
 
@@ -139,8 +162,10 @@ struct PrivacyControlsView: View {
                 .font(.title)
                 .fontWeight(.bold)
 
-            Text("macOS does not provide apps a supported global hardware-off switch. These controls show the real permission state, request access only when you choose it, and take you to the system privacy controls to revoke access.")
-                .foregroundStyle(.secondary)
+            Text(
+                "macOS does not provide apps a supported global hardware-off switch. These controls show the real permission state, request access only when you choose it, and take you to the system privacy controls to revoke access."
+            )
+            .foregroundStyle(.secondary)
 
             ForEach(PrivacyDevice.allCases) { device in
                 HStack {
@@ -208,6 +233,7 @@ struct OverviewView: View {
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
+                    Button("Quick Scan", action: viewModel.runQuickScan).disabled(viewModel.isScanning)
                     Button(action: { viewModel.runFullScan() }) {
                         Label("Run Full Scan", systemImage: "play.fill")
                             .padding(.horizontal)
@@ -219,16 +245,38 @@ struct OverviewView: View {
                 .padding()
 
                 if viewModel.isScanning {
-                    ProgressView(viewModel.scanStatus)
-                        .padding()
+                    HStack {
+                        ProgressView(viewModel.scanStatus)
+                        Button("Cancel", action: viewModel.cancelScan)
+                    }.padding()
+                } else if !viewModel.scanStatus.isEmpty {
+                    Text(viewModel.scanStatus).padding().accessibilityLabel(viewModel.scanStatus)
+                }
+                if let changes = viewModel.changes {
+                    Text(
+                        "Since the previous scan: \(changes.added.count) new, \(changes.continuing.count) continuing, \(changes.resolved.count) resolved, \(changes.unobserved.count) not rechecked."
+                    )
+                    .padding(.horizontal)
+                }
+                ForEach(viewModel.components) { component in
+                    HStack {
+                        Text(component.scannerID.capitalized)
+                        Spacer()
+                        Text(component.status.capitalized)
+                        if !component.errors.isEmpty {
+                            Text(component.errors.joined(separator: "; ")).foregroundStyle(.orange)
+                        }
+                    }.padding(.horizontal)
                 }
 
                 // Stats Grid
-                LazyVGrid(columns: [
-                    GridItem(.flexible()),
-                    GridItem(.flexible()),
-                    GridItem(.flexible())
-                ], spacing: 16) {
+                LazyVGrid(
+                    columns: [
+                        GridItem(.flexible()),
+                        GridItem(.flexible()),
+                        GridItem(.flexible()),
+                    ], spacing: 16
+                ) {
                     StatCard(
                         title: "Keychain Items",
                         value: "\(viewModel.keychainCount)",
@@ -385,8 +433,8 @@ struct KeychainView: View {
             return viewModel.keychainItems
         }
         return viewModel.keychainItems.filter {
-            $0.service.localizedCaseInsensitiveContains(searchText) ||
-            $0.account.localizedCaseInsensitiveContains(searchText)
+            $0.service.localizedCaseInsensitiveContains(searchText)
+                || $0.account.localizedCaseInsensitiveContains(searchText)
         }
     }
 

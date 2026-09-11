@@ -68,6 +68,9 @@ func init() {
 }
 
 func runExport(browsers []string) error {
+	if includePasswords {
+		return fmt.Errorf("saved-password export is not implemented; remove --passwords")
+	}
 	printSection("Browser Export")
 
 	results := make(map[string]*browser.ExportResult)

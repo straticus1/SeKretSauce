@@ -22,19 +22,12 @@ cp Info.plist "${APP_BUNDLE}/Contents/"
 
 # Build the Swift executable
 echo "Compiling Swift code..."
-swiftc -O \
-    -sdk $(xcrun --sdk macosx --show-sdk-path) \
-    -target arm64-apple-macos14.0 \
-    -o "${APP_BUNDLE}/Contents/MacOS/${APP_NAME}" \
-    SeKretSauceApp.swift \
-    ContentView.swift \
-    ViewModel.swift \
-    -framework SwiftUI \
-    -framework Foundation
+swift build -c release
+cp .build/release/SeKretSauceGUI "${APP_BUNDLE}/Contents/MacOS/${APP_NAME}"
 
 # Copy CLI tool to Resources
-if [ -f "../sekretsauce" ]; then
-    cp "../sekretsauce" "${APP_BUNDLE}/Contents/Resources/"
+if [ -f "../../bin/sekretsauce" ]; then
+    cp "../../bin/sekretsauce" "${APP_BUNDLE}/Contents/Resources/"
     chmod +x "${APP_BUNDLE}/Contents/Resources/sekretsauce"
     echo "Included CLI tool in app bundle"
 fi
@@ -45,7 +38,7 @@ echo "Note: Add AppIcon.icns to Resources for a proper icon"
 
 # Sign the app (ad-hoc for development)
 echo "Signing app bundle..."
-codesign --force --deep --sign - "${APP_BUNDLE}"
+codesign --force --sign "${CODE_SIGN_IDENTITY:--}" --identifier com.afterdarktech.sekretsauce "${APP_BUNDLE}"
 
 echo ""
 echo "Build complete!"
