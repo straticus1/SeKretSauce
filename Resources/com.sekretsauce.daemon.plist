@@ -6,6 +6,9 @@
     <key>Label</key>
     <string>com.sekretsauce.daemon</string>
 
+    <key>MachServices</key>
+    <dict><key>com.sekretsauce.daemon.control</key><true/></dict>
+
     <!-- Executable -->
     <key>ProgramArguments</key>
     <array>

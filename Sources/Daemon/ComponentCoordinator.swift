@@ -1,9 +1,9 @@
-import Foundation
-import os.log
-import CryptoKit
 import Common
-import TunnelDetection
+import CryptoKit
 import EndpointSecurityMonitor
+import Foundation
+import TunnelDetection
+import os.log
 
 /// Coordinates all security agent components
 @MainActor
@@ -20,6 +20,7 @@ public final class ComponentCoordinator {
     private var sshWrapperInstalled = false
     private var networkExtensionActive = false
     private var processMonitorActive = false
+    private var processMonitorError: String?
 
     private init() {}
 
@@ -36,6 +37,7 @@ public final class ComponentCoordinator {
         auditLogger.logSystemStart()
 
         do {
+            AgentControlService.shared.start()
             let config = try loadConfiguration()
 
             if SecureStorage.shared.exists(key: "api_key") {
@@ -45,7 +47,8 @@ public final class ComponentCoordinator {
                     os_log(.info, log: log, "Authentication successful")
                 } catch {
                     auditLogger.logAuthFailure(reason: error.localizedDescription)
-                    os_log(.error, log: log, "Remote authentication unavailable; local protection will continue")
+                    os_log(
+                        .error, log: log, "Remote authentication unavailable; local protection will continue")
                 }
             } else {
                 os_log(.info, log: log, "No remote credentials configured; starting in local-only mode")
@@ -63,7 +66,8 @@ public final class ComponentCoordinator {
                 do {
                     try await activateNetworkExtension()
                 } catch {
-                    auditLogger.logError(error, source: "Coordinator", context: "Network extension unavailable")
+                    auditLogger.logError(
+                        error, source: "Coordinator", context: "Network extension unavailable")
                 }
             }
 
@@ -71,7 +75,9 @@ public final class ComponentCoordinator {
                 do {
                     try startProcessMonitor(tunnelDetectionEnabled: config.enableTunnelDetection)
                 } catch {
-                    auditLogger.logError(error, source: "Coordinator", context: "Process monitoring unavailable")
+                    processMonitorError = error.localizedDescription
+                    auditLogger.logError(
+                        error, source: "Coordinator", context: "Process monitoring unavailable")
                 }
             }
 
@@ -109,6 +115,39 @@ public final class ComponentCoordinator {
         isRunning = false
 
         os_log(.info, log: log, "All components stopped")
+    }
+
+    public func health(for uid: uid_t) -> AgentHealth {
+        let telemetry = ProcessMonitor.shared.telemetry
+        let canaries = CanaryManager.installed(for: uid)
+        let sensorState =
+            processMonitorActive ? (telemetry.dropped > 0 ? "degraded" : "active") : "unavailable"
+        return AgentHealth(
+            components: [
+                ComponentHealth(
+                    id: "containment",
+                    state: IncidentControl.automaticResponseEnabled ? "enabled" : "unavailable",
+                    reason: IncidentControl.automaticResponseEnabled
+                        ? "Task response enabled; individual attempts may fail"
+                        : "Automatic containment awaits signed macOS validation"),
+                ComponentHealth(
+                    id: "sensor", state: sensorState,
+                    reason: processMonitorError
+                        ?? (processMonitorActive ? "" : "Behavioral monitoring is not running")),
+                ComponentHealth(
+                    id: "canaries",
+                    state: canaries ? (processMonitorActive ? "active" : "degraded") : "notInstalled",
+                    reason: canaries
+                        ? "Canary files installed; protection depends on the sensor"
+                        : "Install canaries to enable this signal"),
+                ComponentHealth(
+                    id: "networkProxy", state: "unavailable", reason: "No upstream relay is implemented"),
+                ComponentHealth(
+                    id: "remoteSync", state: authManager.isAuthenticated ? "active" : "unavailable",
+                    reason: authManager.isAuthenticated
+                        ? "" : "Local protection operates independently of remote sync"),
+            ], eventsReceived: telemetry.received, eventsDropped: telemetry.dropped,
+            lastEventAt: telemetry.lastEvent)
     }
 
     // MARK: - Configuration
@@ -152,19 +191,23 @@ public final class ComponentCoordinator {
 
         let candidatePaths = [
             "/Library/Application Support/SeKretSauce/ssh-wrapper",
-            "/usr/local/bin/ssh-wrapper"
+            "/usr/local/bin/ssh-wrapper",
         ]
         let fileManager = FileManager.default
 
-        guard let wrapperPath = candidatePaths.first(where: {
-            fileManager.isExecutableFile(atPath: $0)
-        }) else {
+        guard
+            let wrapperPath = candidatePaths.first(where: {
+                fileManager.isExecutableFile(atPath: $0)
+            })
+        else {
             os_log(.error, log: log, "SSH wrapper binary not found")
             throw ComponentError.sshWrapperNotFound
         }
 
         sshWrapperInstalled = true
-        os_log(.info, log: log, "SSH wrapper available at %{public}@; users must invoke or alias it explicitly", wrapperPath)
+        os_log(
+            .info, log: log,
+            "SSH wrapper available at %{public}@; users must invoke or alias it explicitly", wrapperPath)
     }
 
     private func uninstallSSHWrapper() {
@@ -199,6 +242,7 @@ public final class ComponentCoordinator {
         try ProcessMonitor.shared.start(tunnelDetectionEnabled: tunnelDetectionEnabled)
         FileMonitor.shared.start()
         processMonitorActive = true
+        processMonitorError = nil
         os_log(.info, log: log, "Process and file monitors activated")
     }
 
@@ -220,7 +264,8 @@ public final class ComponentCoordinator {
         logSyncTimer?.invalidate()
         let safeInterval = min(max(intervalSeconds, 30), 86_400)
 
-        logSyncTimer = Timer.scheduledTimer(withTimeInterval: TimeInterval(safeInterval), repeats: true) { [weak self] _ in
+        logSyncTimer = Timer.scheduledTimer(withTimeInterval: TimeInterval(safeInterval), repeats: true) {
+            [weak self] _ in
             Task {
                 await self?.syncLogs()
             }
@@ -243,7 +288,7 @@ public final class ComponentCoordinator {
             // Get unsync'd log files
             let logFiles = auditLogger.getLogFiles()
 
-            for file in logFiles.suffix(5) { // Sync last 5 days max at a time
+            for file in logFiles.suffix(5) {  // Sync last 5 days max at a time
                 let data = try readLogFile(file)
                 let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
                 guard manifest[file.lastPathComponent] != digest else { continue }
@@ -282,7 +327,8 @@ public final class ComponentCoordinator {
         let (_, response) = try await URLSession.shared.data(for: request)
 
         guard let httpResponse = response as? HTTPURLResponse,
-              (200...299).contains(httpResponse.statusCode) else {
+            (200...299).contains(httpResponse.statusCode)
+        else {
             throw ComponentError.logUploadFailed
         }
     }
@@ -298,8 +344,9 @@ public final class ComponentCoordinator {
 
     private func loadLogSyncManifest() -> [String: String] {
         guard let json = try? SecureStorage.shared.retrieve(key: "log_sync_manifest"),
-              let data = json.data(using: .utf8),
-              let manifest = try? JSONDecoder().decode([String: String].self, from: data) else {
+            let data = json.data(using: .utf8),
+            let manifest = try? JSONDecoder().decode([String: String].self, from: data)
+        else {
             return [:]
         }
         return manifest
@@ -318,7 +365,8 @@ public final class ComponentCoordinator {
     private func scheduleLogCleanup(retentionDays: Int) {
         // Run cleanup daily
         logCleanupTimer?.invalidate()
-        logCleanupTimer = Timer.scheduledTimer(withTimeInterval: 86400, repeats: true) { [weak self] _ in
+        logCleanupTimer = Timer.scheduledTimer(withTimeInterval: 86400, repeats: true) {
+            [weak self] _ in
             self?.auditLogger.cleanupOldLogs(retentionDays: min(max(retentionDays, 1), 3_650))
         }
 

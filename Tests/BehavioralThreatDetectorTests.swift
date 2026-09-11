@@ -1,4 +1,5 @@
 import XCTest
+
 @testable import ThreatDetection
 
 final class BehavioralThreatDetectorTests: XCTestCase {
@@ -101,32 +102,70 @@ final class BehavioralThreatDetectorTests: XCTestCase {
             )
         )
         var verdict = ThreatVerdict.clean
-        for index in 0..<3 {
+        for index in 0..<300 {
             verdict = detector.observeFileMutation(
                 FileMutationObservation(
                     pid: 100,
                     processPath: "/Applications/Editor.app/Contents/MacOS/Editor",
                     targetPath: "/Users/me/Documents/file-\(index).txt",
                     kind: .write,
-                    timestamp: start.addingTimeInterval(Double(index))
+                    timestamp: start
                 )
             )
         }
 
         XCTAssertEqual(verdict.action, .observe)
+        XCTAssertEqual(verdict.score, 60)
+    }
+
+    func testExpiredBurstDoesNotContributeToLaterCredentialMutation() {
+        let detector = BehavioralThreatDetector(ransomwareWindow: 2, ransomwareFileThreshold: 3)
+        let start = Date()
+        for index in 0..<4 {
+            _ = detector.observeFileMutation(
+                FileMutationObservation(
+                    pid: 12, processPath: "/Applications/Editor", targetPath: "/Users/me/\(index).txt",
+                    kind: .write, timestamp: start))
+        }
+        let result = detector.observeFileMutation(
+            FileMutationObservation(
+                pid: 12, processPath: "/Applications/Editor", targetPath: "/Users/me/.ssh/config",
+                kind: .write, timestamp: start.addingTimeInterval(10)))
+        XCTAssertEqual(result.score, 35)
+        XCTAssertEqual(result.action, .observe)
+    }
+
+    func testExecutionVersionPreventsInheritedRiskForSamePIDAndPath() {
+        let detector = BehavioralThreatDetector()
+        _ = detector.observeProcess(
+            ProcessObservation(
+                pid: 12, path: "/tmp/editor", arguments: [],
+                isPlatformBinary: false, isCodeSigned: false, executionVersion: 1))
+        let result = detector.observeFileMutation(
+            FileMutationObservation(
+                pid: 12, processPath: "/tmp/editor", targetPath: "/Users/me/Library/LaunchAgents/a.plist",
+                kind: .write, executionVersion: 2))
+        XCTAssertEqual(result.score, 40)
+        XCTAssertEqual(result.action, .observe)
     }
 
     func testOldMutationsFallOutOfRansomwareWindow() {
         let detector = BehavioralThreatDetector(ransomwareWindow: 2, ransomwareFileThreshold: 3)
         let start = Date()
         _ = detector.observeFileMutation(
-            FileMutationObservation(pid: 7, processPath: "/tmp/tool", targetPath: "/Users/me/a.docx", kind: .write, timestamp: start)
+            FileMutationObservation(
+                pid: 7, processPath: "/tmp/tool", targetPath: "/Users/me/a.docx", kind: .write,
+                timestamp: start)
         )
         _ = detector.observeFileMutation(
-            FileMutationObservation(pid: 7, processPath: "/tmp/tool", targetPath: "/Users/me/b.docx", kind: .write, timestamp: start.addingTimeInterval(1))
+            FileMutationObservation(
+                pid: 7, processPath: "/tmp/tool", targetPath: "/Users/me/b.docx", kind: .write,
+                timestamp: start.addingTimeInterval(1))
         )
         let verdict = detector.observeFileMutation(
-            FileMutationObservation(pid: 7, processPath: "/tmp/tool", targetPath: "/Users/me/c.docx", kind: .write, timestamp: start.addingTimeInterval(10))
+            FileMutationObservation(
+                pid: 7, processPath: "/tmp/tool", targetPath: "/Users/me/c.docx", kind: .write,
+                timestamp: start.addingTimeInterval(10))
         )
 
         XCTAssertNotEqual(verdict.action, .suspend)

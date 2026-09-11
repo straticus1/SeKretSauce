@@ -1,0 +1,36 @@
+{
+  "target": "fixture:501",
+  "schema_version": 1,
+  "run_id": "fixture-v1",
+  "profile": "quick",
+  "started_at": "2026-09-10T12:00:00Z",
+  "finished_at": "2026-09-10T12:00:01Z",
+  "status": "partial",
+  "components": [
+    {
+      "scanner_id": "keychain",
+      "version": 1,
+      "status": "failed",
+      "errors": [
+        "permission denied"
+      ],
+      "skipped_reason": "",
+      "findings": []
+    },
+    {
+      "scanner_id": "apps",
+      "version": 1,
+      "status": "completed",
+      "errors": [],
+      "skipped_reason": "",
+      "findings": []
+    }
+  ],
+  "findings": [],
+  "summary": {
+    "total_findings": 0,
+    "critical_issues": 0,
+    "warnings": 0,
+    "recommendations": []
+  }
+}

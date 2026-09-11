@@ -1,9 +1,9 @@
-import Foundation
-import EndpointSecurity
-import os.log
 import Common
-import TunnelDetection
+import EndpointSecurity
+import Foundation
 import ThreatDetection
+import TunnelDetection
+import os.log
 
 /// Process Monitor using Endpoint Security Framework
 /// Monitors process execution, file access, and network activity
@@ -22,6 +22,16 @@ public final class ProcessMonitor: @unchecked Sendable {
     private var isRunning = false
     private let configurationLock = NSLock()
     private var tunnelDetectionEnabled = true
+    private let healthLock = NSLock()
+    private var received: UInt64 = 0
+    private var dropped: UInt64 = 0
+    private var lastSequence: UInt64?
+    private var lastEvent: Date?
+    public var telemetry: (received: UInt64, dropped: UInt64, lastEvent: Date?) {
+        healthLock.lock()
+        defer { healthLock.unlock() }
+        return (received, dropped, lastEvent)
+    }
 
     private init() {}
 
@@ -34,6 +44,9 @@ public final class ProcessMonitor: @unchecked Sendable {
             return
         }
 
+        healthLock.lock()
+        lastSequence = nil
+        healthLock.unlock()
         os_log(.info, log: log, "Starting process monitor...")
         setTunnelDetectionEnabled(tunnelDetectionEnabled)
 
@@ -79,15 +92,16 @@ public final class ProcessMonitor: @unchecked Sendable {
 
         // Subscribe to events
         let events: [es_event_type_t] = [
-            ES_EVENT_TYPE_NOTIFY_EXEC,           // Process execution
-            ES_EVENT_TYPE_NOTIFY_FORK,           // Process fork
-            ES_EVENT_TYPE_NOTIFY_EXIT,           // Process exit
-            ES_EVENT_TYPE_NOTIFY_OPEN,           // File open
-            ES_EVENT_TYPE_NOTIFY_WRITE,          // File write
-            ES_EVENT_TYPE_NOTIFY_RENAME,         // File rename
-            ES_EVENT_TYPE_NOTIFY_SIGNAL,         // Signal delivery
-            ES_EVENT_TYPE_NOTIFY_KEXTLOAD,       // Kernel extension load
-            ES_EVENT_TYPE_NOTIFY_MOUNT,          // Filesystem mount
+            ES_EVENT_TYPE_NOTIFY_EXEC,  // Process execution
+            ES_EVENT_TYPE_NOTIFY_FORK,  // Process fork
+            ES_EVENT_TYPE_NOTIFY_EXIT,  // Process exit
+            ES_EVENT_TYPE_NOTIFY_OPEN,  // File open
+            ES_EVENT_TYPE_NOTIFY_WRITE,  // File write
+            ES_EVENT_TYPE_NOTIFY_RENAME,  // File rename
+            ES_EVENT_TYPE_NOTIFY_UNLINK,  // File deletion
+            ES_EVENT_TYPE_NOTIFY_SIGNAL,  // Signal delivery
+            ES_EVENT_TYPE_NOTIFY_KEXTLOAD,  // Kernel extension load
+            ES_EVENT_TYPE_NOTIFY_MOUNT,  // Filesystem mount
         ]
 
         let subscribeResult = es_subscribe(newClient!, events, UInt32(events.count))
@@ -137,6 +151,17 @@ public final class ProcessMonitor: @unchecked Sendable {
     // MARK: - Event Handling
 
     private func handleEvent(_ message: UnsafePointer<es_message_t>) {
+        healthLock.lock()
+        received += 1
+        lastEvent = Date()
+        if message.pointee.version >= 4 {
+            let sequence = message.pointee.global_seq_num
+            if let previous = lastSequence, sequence > previous, sequence - previous > 1 {
+                dropped &+= sequence - previous - 1
+            }
+            lastSequence = sequence
+        }
+        healthLock.unlock()
         let eventType = message.pointee.event_type
 
         switch eventType {
@@ -157,6 +182,10 @@ public final class ProcessMonitor: @unchecked Sendable {
 
         case ES_EVENT_TYPE_NOTIFY_RENAME:
             handleRenameEvent(message)
+        case ES_EVENT_TYPE_NOTIFY_UNLINK:
+            evaluateFileThreat(
+                path: getString(from: message.pointee.event.unlink.target.pointee.path), kind: .delete,
+                message: message)
 
         case ES_EVENT_TYPE_NOTIFY_KEXTLOAD:
             handleKextLoadEvent(message)
@@ -170,7 +199,8 @@ public final class ProcessMonitor: @unchecked Sendable {
 
     private func handleExecEvent(_ message: UnsafePointer<es_message_t>) {
         var event = message.pointee.event.exec
-        let process = message.pointee.process.pointee
+        // EXEC target describes the new image; message.process describes the old one.
+        let process = event.target.pointee
 
         // Get process details
         let pid = audit_token_to_pid(process.audit_token)
@@ -301,7 +331,8 @@ public final class ProcessMonitor: @unchecked Sendable {
         case ES_DESTINATION_TYPE_NEW_PATH:
             let directory = getString(from: event.destination.new_path.dir.pointee.path)
             let filename = getString(from: event.destination.new_path.filename)
-            destinationPath = URL(fileURLWithPath: directory)
+            destinationPath =
+                URL(fileURLWithPath: directory)
                 .appendingPathComponent(filename, isDirectory: false)
                 .path
         default:
@@ -321,7 +352,7 @@ public final class ProcessMonitor: @unchecked Sendable {
             "/tailscale/",
             "/.wireguard/",
             "/openvpn/",
-            "/.frp"
+            "/.frp",
         ]
 
         for pattern in sensitivePatterns {
@@ -338,7 +369,7 @@ public final class ProcessMonitor: @unchecked Sendable {
                     metadata: [
                         "path": path,
                         "pid": String(pid),
-                        "process": execPath
+                        "process": execPath,
                     ]
                 )
                 break
@@ -392,10 +423,17 @@ public final class ProcessMonitor: @unchecked Sendable {
                 arguments: metadata.arguments,
                 isPlatformBinary: process.is_platform_binary,
                 isCodeSigned: (process.codesigning_flags & 0x0000_0001) != 0
-                    && (process.codesigning_flags & 0x2000_0000) != 0
+                    && (process.codesigning_flags & 0x2000_0000) != 0,
+                executionVersion: process.audit_token.val.7
             )
         )
-        handleThreatVerdict(verdict, pid: metadata.pid, processPath: metadata.path)
+        handleThreatVerdict(
+            verdict, pid: metadata.pid, processPath: metadata.path,
+            identity: ExecutionIdentity(auditToken: process.audit_token))
+    }
+
+    static func shouldEvaluateMutation(pid: Int32, daemonPID: Int32) -> Bool {
+        pid != daemonPID
     }
 
     private func evaluateFileThreat(
@@ -406,18 +444,23 @@ public final class ProcessMonitor: @unchecked Sendable {
         let process = message.pointee.process.pointee
         let pid = audit_token_to_pid(process.audit_token)
         let processPath = getString(from: process.executable.pointee.path)
+        // All canary maintenance executes inside this daemon after authenticated IPC.
+        // A copied app name, path, or signer grants no exemption.
+        guard Self.shouldEvaluateMutation(pid: pid, daemonPID: getpid()) else { return }
         let verdict = threatDetector.observeFileMutation(
             FileMutationObservation(
                 pid: pid,
                 processPath: processPath,
                 targetPath: path,
-                kind: kind
+                kind: kind,
+                executionVersion: process.audit_token.val.7
             )
         )
         handleThreatVerdict(
             verdict,
             pid: pid,
             processPath: processPath,
+            identity: ExecutionIdentity(auditToken: process.audit_token),
             targetPath: path
         )
     }
@@ -426,6 +469,7 @@ public final class ProcessMonitor: @unchecked Sendable {
         _ verdict: ThreatVerdict,
         pid: Int32,
         processPath: String,
+        identity: ExecutionIdentity,
         targetPath: String? = nil
     ) {
         guard verdict.action != .allow else { return }
@@ -434,7 +478,7 @@ public final class ProcessMonitor: @unchecked Sendable {
             "pid": String(pid),
             "process": processPath,
             "score": String(verdict.score),
-            "reasons": verdict.reasons.joined(separator: "; ")
+            "reasons": verdict.reasons.joined(separator: "; "),
         ]
         if let targetPath {
             metadata["target_path"] = targetPath
@@ -452,30 +496,23 @@ public final class ProcessMonitor: @unchecked Sendable {
             metadata: metadata
         )
 
-        guard verdict.action == .suspend,
-              pid > 1,
-              pid != getpid(),
-              !processPath.hasPrefix("/System/"),
-              !processPath.hasPrefix("/usr/libexec/") else {
-            return
-        }
-
-        if kill(pid, SIGSTOP) == 0 {
+        guard pid > 1, pid != getpid(), !processPath.hasPrefix("/System/"),
+            !processPath.hasPrefix("/usr/libexec/")
+        else { return }
+        do {
+            let incident = try IncidentResponse.shared.observe(
+                verdict, identity: identity, path: processPath)
             auditLogger.log(
-                eventType: .processSuspended,
-                severity: .critical,
-                source: "RansomwareShield",
-                message: "Suspended a process after high-confidence behavioral detection",
-                metadata: metadata
-            )
-        } else {
-            auditLogger.log(
-                eventType: .error,
-                severity: .high,
-                source: "RansomwareShield",
-                message: "Failed to suspend suspicious process",
-                metadata: metadata.merging(["errno": String(errno)]) { current, _ in current }
-            )
+                eventType: incident.responseState == "applied" ? .processSuspended : .malwareDetected,
+                severity: verdict.action == .suspend ? .critical : .high, source: "IncidentResponse",
+                message: "Response state: \(incident.responseState)",
+                metadata: metadata.merging([
+                    "incident_id": incident.id.uuidString, "response_error": incident.responseError ?? "",
+                ]) { current, _ in current })
+        } catch {
+            auditLogger.logError(
+                error, source: "IncidentResponse",
+                context: "Response unavailable; no untracked PID signal was sent")
         }
     }
 }
@@ -497,7 +534,8 @@ public enum ProcessMonitorError: Error, LocalizedError {
         case .notEntitled:
             return "Missing Endpoint Security entitlement"
         case .notPermitted:
-            return "Endpoint Security not permitted - grant access in System Preferences > Security & Privacy > Privacy > Full Disk Access"
+            return
+                "Endpoint Security not permitted - grant access in System Preferences > Security & Privacy > Privacy > Full Disk Access"
         case .notPrivileged:
             return "Must run as root"
         case .tooManyClients:

@@ -125,8 +125,9 @@ let package = Package(
         // Tests
         .testTarget(
             name: "SeKretSauceTests",
-            dependencies: ["Common", "TunnelDetection", "ThreatDetection", "SSHRecorder"],
-            path: "Tests"
+            dependencies: ["Common", "TunnelDetection", "ThreatDetection", "SSHRecorder", "EndpointSecurityMonitor"],
+            path: "Tests",
+            exclude: ["Fixtures"]
         ),
     ]
 )

@@ -91,6 +91,10 @@ build_installer() {
 build_daemon() {
     echo "🔨 Building Swift security agent daemon..."
     swift build -c release
+    if [ -n "${CODE_SIGN_IDENTITY:-}" ]; then
+        codesign --force --sign "$CODE_SIGN_IDENTITY" --identifier com.sekretsauce.daemon \
+            --entitlements Resources/SeKretSauce.entitlements .build/release/sekretsauced
+    fi
     echo "✅ Daemon built: .build/release/"
 }
 

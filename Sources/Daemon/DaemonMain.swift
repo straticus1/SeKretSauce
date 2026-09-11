@@ -1,6 +1,6 @@
+import Common
 import Foundation
 import os.log
-import Common
 
 /// SeKretSauce Security Agent - Launch Daemon Entry Point
 /// This daemon runs at boot with root privileges to monitor and secure the system
@@ -35,7 +35,9 @@ private enum SignalController {
             let config = try SecureStorage.shared.retrieveConfiguration()
             try ComponentCoordinator.shared.updateConfiguration(config)
         } catch {
-            os_log(.error, log: SeKretSauceDaemon.log, "Failed to reload configuration: %{public}@", error.localizedDescription)
+            os_log(
+                .error, log: SeKretSauceDaemon.log, "Failed to reload configuration: %{public}@",
+                error.localizedDescription)
         }
     }
 }
@@ -49,6 +51,24 @@ struct SeKretSauceDaemon {
     static func main() async {
         os_log(.info, log: Self.log, "SeKretSauce Security Agent starting...")
         os_log(.info, log: Self.log, "PID: %d, UID: %d", getpid(), getuid())
+
+        if CommandLine.arguments.contains("--status") {
+            do {
+                let health = try await AgentControl.request()
+                if CommandLine.arguments.contains("--json") {
+                    let data = try JSONEncoder().encode(health)
+                    print(String(decoding: data, as: UTF8.self))
+                } else {
+                    for component in health.components {
+                        print("\(component.id): \(component.state) \(component.reason)")
+                    }
+                }
+            } catch {
+                fputs("Agent status unavailable: \(error.localizedDescription)\n", stderr)
+                exit(1)
+            }
+            return
+        }
 
         // Verify running as root
         guard getuid() == 0 else {
@@ -68,11 +88,6 @@ struct SeKretSauceDaemon {
             return
         }
 
-        if args.contains("--status") {
-            printStatus()
-            return
-        }
-
         if args.contains("--version") {
             printVersion()
             return
@@ -82,7 +97,9 @@ struct SeKretSauceDaemon {
         do {
             try await ComponentCoordinator.shared.start()
         } catch {
-            os_log(.fault, log: Self.log, "Failed to start coordinator: %{public}@", error.localizedDescription)
+            os_log(
+                .fault, log: Self.log, "Failed to start coordinator: %{public}@", error.localizedDescription
+            )
             AuditLogger.shared.logError(error, source: "Main", context: "Startup failure")
             exit(1)
         }

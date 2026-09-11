@@ -26,19 +26,22 @@ public struct ProcessObservation: Sendable {
     public let arguments: [String]
     public let isPlatformBinary: Bool
     public let isCodeSigned: Bool
+    public let executionVersion: UInt32
 
     public init(
         pid: Int32,
         path: String,
         arguments: [String],
         isPlatformBinary: Bool,
-        isCodeSigned: Bool
+        isCodeSigned: Bool,
+        executionVersion: UInt32 = 0
     ) {
         self.pid = pid
         self.path = path
         self.arguments = arguments
         self.isPlatformBinary = isPlatformBinary
         self.isCodeSigned = isCodeSigned
+        self.executionVersion = executionVersion
     }
 }
 
@@ -55,19 +58,22 @@ public struct FileMutationObservation: Sendable {
     public let targetPath: String
     public let kind: FileMutationKind
     public let timestamp: Date
+    public let executionVersion: UInt32
 
     public init(
         pid: Int32,
         processPath: String,
         targetPath: String,
         kind: FileMutationKind,
-        timestamp: Date = Date()
+        timestamp: Date = Date(),
+        executionVersion: UInt32 = 0
     ) {
         self.pid = pid
         self.processPath = processPath
         self.targetPath = targetPath
         self.kind = kind
         self.timestamp = timestamp
+        self.executionVersion = executionVersion
     }
 }
 
@@ -75,9 +81,10 @@ public struct FileMutationObservation: Sendable {
 /// only recommends containment when multiple high-confidence signals correlate.
 public final class BehavioralThreatDetector: @unchecked Sendable {
     private struct ProcessState {
-        var score = 0
-        var reasons = Set<String>()
-        var mutations: [(path: String, date: Date)] = []
+        let executionVersion: UInt32
+        let processPath: String
+        var signals: [String: Int] = [:]
+        var mutations: [String: Date] = [:]
     }
 
     private let lock = NSLock()
@@ -87,10 +94,10 @@ public final class BehavioralThreatDetector: @unchecked Sendable {
 
     private let documentExtensions: Set<String> = [
         "doc", "docx", "xls", "xlsx", "ppt", "pptx", "pdf", "txt", "rtf",
-        "jpg", "jpeg", "png", "heic", "mov", "mp4", "zip", "sqlite"
+        "jpg", "jpeg", "png", "heic", "mov", "mp4", "zip", "sqlite",
     ]
     private let ransomwareExtensions: Set<String> = [
-        "encrypted", "locked", "crypted", "crypto", "enc", "lockbit"
+        "encrypted", "locked", "crypted", "crypto", "enc", "lockbit",
     ]
 
     public init(ransomwareWindow: TimeInterval = 10, ransomwareFileThreshold: Int = 12) {
@@ -99,7 +106,9 @@ public final class BehavioralThreatDetector: @unchecked Sendable {
     }
 
     public func observeProcess(_ observation: ProcessObservation) -> ThreatVerdict {
-        return withState(for: observation.pid) { state in
+        return withState(
+            for: observation.pid, version: observation.executionVersion, path: observation.path
+        ) { state in
             let normalizedPath = observation.path.lowercased()
             let commandLine = observation.arguments.joined(separator: " ").lowercased()
 
@@ -112,7 +121,9 @@ public final class BehavioralThreatDetector: @unchecked Sendable {
             if containsObfuscatedInterpreterCommand(commandLine) {
                 add(30, "encoded or obfuscated interpreter command", to: &state)
             }
-            if commandLine.contains("curl ") && (commandLine.contains("| sh") || commandLine.contains("| bash")) {
+            if commandLine.contains("curl ")
+                && (commandLine.contains("| sh") || commandLine.contains("| bash"))
+            {
                 add(35, "download piped directly to a shell", to: &state)
             }
             if normalizedPath.contains("/launchagents/") || normalizedPath.contains("/launchdaemons/") {
@@ -126,7 +137,9 @@ public final class BehavioralThreatDetector: @unchecked Sendable {
     public func observeFileMutation(_ observation: FileMutationObservation) -> ThreatVerdict {
         guard !isTrustedSystemProcess(observation.processPath) else { return .clean }
 
-        return withState(for: observation.pid) { state in
+        return withState(
+            for: observation.pid, version: observation.executionVersion, path: observation.processPath
+        ) { state in
             let path = observation.targetPath.lowercased()
             let now = observation.timestamp
 
@@ -146,17 +159,16 @@ public final class BehavioralThreatDetector: @unchecked Sendable {
                 add(45, "created a common ransomware extension", to: &state)
             }
 
+            // Window evidence is recomputed, never accumulated under a changing display label.
+            let cutoff = now.addingTimeInterval(-ransomwareWindow)
+            state.mutations = state.mutations.filter { $0.value >= cutoff }
             if documentExtensions.contains(URL(fileURLWithPath: path).pathExtension) {
-                state.mutations.append((path, now))
-                let cutoff = now.addingTimeInterval(-ransomwareWindow)
-                state.mutations.removeAll { $0.date < cutoff }
-                let uniqueFiles = Set(state.mutations.map(\.path)).count
-                if uniqueFiles >= ransomwareFileThreshold {
-                    // A bulk edit by a signed productivity tool is not enough
-                    // to stop a process. This becomes containment-worthy only
-                    // when correlated with execution or extension indicators.
-                    add(60, "rapidly modified \(uniqueFiles) user documents", to: &state)
-                }
+                state.mutations[path] = now
+            }
+            if state.mutations.count >= ransomwareFileThreshold {
+                state.signals["rapid document mutations"] = 60
+            } else {
+                state.signals.removeValue(forKey: "rapid document mutations")
             }
 
             return verdict(for: state)
@@ -171,31 +183,40 @@ public final class BehavioralThreatDetector: @unchecked Sendable {
 
     private func withState(
         for pid: Int32,
+        version: UInt32,
+        path: String,
         update: (inout ProcessState) -> ThreatVerdict
     ) -> ThreatVerdict {
         lock.lock()
         defer { lock.unlock() }
-        var state = states[pid, default: ProcessState()]
+        var state = states[pid] ?? ProcessState(executionVersion: version, processPath: path)
+        if state.executionVersion != version || state.processPath != path {
+            state = ProcessState(executionVersion: version, processPath: path)
+        }
         let result = update(&state)
         states[pid] = state
         return result
     }
 
     private func add(_ score: Int, _ reason: String, to state: inout ProcessState) {
-        guard state.reasons.insert(reason).inserted else { return }
-        state.score = min(100, state.score + score)
+        state.signals[reason] = score
     }
 
     private func verdict(for state: ProcessState) -> ThreatVerdict {
+        let score = min(100, state.signals.values.reduce(0, +))
+        let reasons = state.signals.keys.map { key in
+            key == "rapid document mutations"
+                ? "rapidly modified \(state.mutations.count) user documents" : key
+        }.sorted()
         let action: ThreatAction
-        if state.score >= 80 {
+        if score >= 80 {
             action = .suspend
-        } else if state.score >= 30 {
+        } else if score >= 30 {
             action = .observe
         } else {
             action = .allow
         }
-        return ThreatVerdict(score: state.score, action: action, reasons: state.reasons.sorted())
+        return ThreatVerdict(score: score, action: action, reasons: reasons)
     }
 
     private func isUserWritableExecutionPath(_ path: String) -> Bool {
@@ -209,7 +230,8 @@ public final class BehavioralThreatDetector: @unchecked Sendable {
     private func containsObfuscatedInterpreterCommand(_ command: String) -> Bool {
         let usesInterpreter = ["osascript", "python", "perl", "ruby", "bash", "zsh", "sh "]
             .contains { command.contains($0) }
-        let encodedPayload = command.contains("base64")
+        let encodedPayload =
+            command.contains("base64")
             || command.contains("frombase64string")
             || command.contains("eval(")
         return usesInterpreter && encodedPayload
