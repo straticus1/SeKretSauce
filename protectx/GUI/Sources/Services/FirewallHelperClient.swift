@@ -1,5 +1,5 @@
-import Foundation
 import FirewallKit
+import Foundation
 import ServiceManagement
 
 enum FirewallHelperClientError: Error, LocalizedError {
@@ -88,22 +88,27 @@ final class FirewallHelperClient {
         }
     }
 
-    func pfStatus() async throws -> (enabled: Bool, rules: [PFRule]) {
-        async let status: (Bool, Int) = request { proxy, reply in
-            proxy.pfGetStatus { enabled, count in reply((enabled, count)) }
+    func pfStatus() async throws -> (enabled: Bool, rules: [PFRule], revision: Int) {
+        let response: (Data?, String?) = try await request { proxy, reply in
+            proxy.pfPolicy { reply(($0, $1)) }
         }
-        async let rulesData: Data? = request { proxy, reply in
-            proxy.pfGetRules(reply: reply)
-        }
+        if let error = response.1 { throw FirewallHelperClientError.operationFailed(error) }
+        guard let data = response.0 else { throw FirewallXPCPayloadError.invalidResponse }
+        let status = try JSONDecoder().decode(PFStatusPayload.self, from: data)
+        guard status.policy.schemaVersion == 1 else { throw FirewallXPCPayloadError.invalidResponse }
+        return (
+            status.enabled, try status.policy.rules.map { try $0.toPFRule() }, status.policy.revision
+        )
+    }
 
-        let (resolvedStatus, resolvedData) = try await (status, rulesData)
-        guard let resolvedData else { throw FirewallXPCPayloadError.invalidResponse }
-        let payloads = try JSONDecoder().decode([PFRulePayload].self, from: resolvedData)
-        let rules = try payloads.map { try $0.toPFRule() }
-        guard rules.count == resolvedStatus.1 else {
-            throw FirewallXPCPayloadError.invalidResponse
+    func applyPF(_ rules: [PFRule], expectedRevision: Int) async throws {
+        let data = try JSONEncoder().encode(rules.map(PFRulePayload.init))
+        guard data.count <= FirewallXPC.maximumPayloadSize else {
+            throw FirewallXPCPayloadError.payloadTooLarge
         }
-        return (resolvedStatus.0, rules)
+        try await command { proxy, reply in
+            proxy.pfApply(data, expectedRevision: expectedRevision, reply: reply)
+        }
     }
 
     func appFirewallStatus() async throws -> AppFirewallStatusPayload {
@@ -203,7 +208,20 @@ final class FirewallHelperClient {
             )
             connection.remoteObjectInterface = NSXPCInterface(with: FirewallHelperProtocol.self)
             let gate = ContinuationGate(continuation) {
+                connection.invalidationHandler = nil
+                connection.interruptionHandler = nil
                 connection.invalidate()
+            }
+            connection.invalidationHandler = {
+                gate.resume(throwing: FirewallHelperClientError.unavailable)
+            }
+            connection.interruptionHandler = {
+                gate.resume(throwing: FirewallHelperClientError.unavailable)
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + 15) {
+                gate.resume(
+                    throwing: FirewallHelperClientError.operationFailed(
+                        "Helper response timed out. Refresh to verify the operation outcome."))
             }
             connection.resume()
             let object = connection.remoteObjectProxyWithErrorHandler { error in

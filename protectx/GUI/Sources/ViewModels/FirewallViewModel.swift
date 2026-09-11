@@ -1,8 +1,8 @@
 // FirewallViewModel - Central state management for Rampart GUI
 
-import SwiftUI
-import FirewallKit
 import Combine
+import FirewallKit
+import SwiftUI
 
 @MainActor
 final class FirewallViewModel: ObservableObject {
@@ -12,6 +12,14 @@ final class FirewallViewModel: ObservableObject {
     // PF State
     @Published var pfEnabled: Bool = false
     @Published var pfRules: [PFRule] = []
+    private var pfRevision = 0
+    struct RulePreview: Identifiable {
+        let id = UUID()
+        let rules: [PFRule]
+        let revision: Int
+        let description: String
+    }
+    @Published var rulePreview: RulePreview?
 
     // App Firewall State
     @Published var appFirewallEnabled: Bool = false
@@ -97,6 +105,7 @@ final class FirewallViewModel: ObservableObject {
                 helperState = .available(version: version)
                 pfEnabled = pfStatus.enabled
                 pfRules = pfStatus.rules
+                pfRevision = pfStatus.revision
                 appFirewallEnabled = appStatus.enabled
                 stealthMode = appStatus.stealthMode
                 blockAll = appStatus.blockAll
@@ -141,32 +150,24 @@ final class FirewallViewModel: ObservableObject {
     }
 
     func addPFRule(_ rule: PFRule) {
-        Task {
-            isLoading = true
-            defer { isLoading = false }
-
-            do {
-                try requireHelper()
-                try await helper.addPFRule(rule)
-                refresh()
-            } catch {
-                showError(error)
-            }
-        }
+        guard !isLoading else { return }
+        rulePreview = RulePreview(
+            rules: pfRules + [rule], revision: pfRevision, description: "Add: \(rule.description)")
     }
 
     func removePFRule(at index: Int) {
-        Task {
-            isLoading = true
-            defer { isLoading = false }
+        guard !isLoading, pfRules.indices.contains(index) else { return }
+        var proposed = pfRules
+        let removed = proposed.remove(at: index)
+        rulePreview = RulePreview(
+            rules: proposed, revision: pfRevision, description: "Remove: \(removed.description)")
+    }
 
-            do {
-                try requireHelper()
-                try await helper.removePFRule(at: index)
-                refresh()
-            } catch {
-                showError(error)
-            }
+    func applyRulePreview() {
+        guard let preview = rulePreview, !isLoading else { return }
+        rulePreview = nil
+        performPrivileged {
+            try await self.helper.applyPF(preview.rules, expectedRevision: preview.revision)
         }
     }
 
@@ -237,20 +238,7 @@ final class FirewallViewModel: ObservableObject {
 
     // MARK: - Quick Actions
 
-    func quickBlockIP(_ ip: String) {
-        Task {
-            isLoading = true
-            defer { isLoading = false }
-
-            do {
-                try requireHelper()
-                try await helper.addPFRule(.block(from: ip))
-                refresh()
-            } catch {
-                showError(error)
-            }
-        }
-    }
+    func quickBlockIP(_ ip: String) { addPFRule(.block(from: ip)) }
 
     // MARK: - Error Handling
 
@@ -265,17 +253,20 @@ final class FirewallViewModel: ObservableObject {
     }
 
     func openHelperApprovalSettings() {
-        guard let url = URL(
-            string: "x-apple.systempreferences:com.apple.LoginItems-Settings.extension"
-        ) else { return }
+        guard
+            let url = URL(
+                string: "x-apple.systempreferences:com.apple.LoginItems-Settings.extension"
+            )
+        else { return }
         NSWorkspace.shared.open(url)
     }
 
     private func performPrivileged(
         _ operation: @escaping @MainActor () async throws -> Void
     ) {
+        guard !isLoading else { return }
+        isLoading = true
         Task {
-            isLoading = true
             defer { isLoading = false }
             do {
                 try requireHelper()

@@ -1,9 +1,9 @@
 // FirewallHelper - Privileged XPC helper for Rampart
 // Runs as root via an SMAppService-managed LaunchDaemon.
 
-import Foundation
-import FirewallKit
 import FirewallHelperCore
+import FirewallKit
+import Foundation
 
 // MARK: - Helper Implementation
 
@@ -16,7 +16,9 @@ class FirewallHelper: NSObject, FirewallHelperProtocol, NSXPCListenerDelegate {
 
     // MARK: - XPC Listener Delegate
 
-    func listener(_ listener: NSXPCListener, shouldAcceptNewConnection connection: NSXPCConnection) -> Bool {
+    func listener(_ listener: NSXPCListener, shouldAcceptNewConnection connection: NSXPCConnection)
+        -> Bool
+    {
         // Verify the connecting process
         guard verifyConnection(connection) else {
             NSLog("FirewallHelper: Rejected connection from unauthorized process")
@@ -45,6 +47,32 @@ class FirewallHelper: NSObject, FirewallHelperProtocol, NSXPCListenerDelegate {
     }
 
     // MARK: - PF Operations
+
+    private let policyQueue = DispatchQueue(label: "com.afterdark.protectx.policy")
+
+    func pfPolicy(reply: @escaping (Data?, String?) -> Void) {
+        policyQueue.async { [self] in
+            do {
+                pf.refresh()
+                if let error = pf.lastError { throw PFError.configurationFailed(error) }
+                let value = PFStatusPayload(enabled: pf.isEnabled, policy: try pf.snapshot())
+                reply(try JSONEncoder().encode(value), nil)
+            } catch { reply(nil, error.localizedDescription) }
+        }
+    }
+
+    func pfApply(_ ruleData: Data, expectedRevision: Int, reply: @escaping (Bool, String?) -> Void) {
+        policyQueue.async { [self] in
+            do {
+                guard ruleData.count <= FirewallXPC.maximumPayloadSize else {
+                    throw FirewallXPCPayloadError.payloadTooLarge
+                }
+                let payloads = try JSONDecoder().decode([PFRulePayload].self, from: ruleData)
+                try pf.apply(payloads.map { try $0.toPFRule() }, expectedRevision: expectedRevision)
+                reply(true, nil)
+            } catch { reply(false, error.localizedDescription) }
+        }
+    }
 
     func pfEnable(reply: @escaping (Bool, String?) -> Void) {
         NSLog("FirewallHelper: pfEnable requested")

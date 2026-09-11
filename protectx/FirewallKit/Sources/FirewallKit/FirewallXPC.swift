@@ -13,6 +13,8 @@ public enum FirewallXPC {
 /// Keep this protocol in FirewallKit so both the GUI and helper compile against
 /// exactly the same selectors and reply signatures.
 @objc public protocol FirewallHelperProtocol {
+    func pfPolicy(reply: @escaping (Data?, String?) -> Void)
+    func pfApply(_ ruleData: Data, expectedRevision: Int, reply: @escaping (Bool, String?) -> Void)
     func pfEnable(reply: @escaping (Bool, String?) -> Void)
     func pfDisable(reply: @escaping (Bool, String?) -> Void)
     func pfReload(reply: @escaping (Bool, String?) -> Void)
@@ -52,6 +54,7 @@ public enum FirewallXPCPayloadError: Error, LocalizedError {
 }
 
 public struct PFRulePayload: Codable, Equatable {
+    public var id: UUID?
     public var action: String
     public var direction: String
     public var networkProtocol: String?
@@ -69,6 +72,7 @@ public struct PFRulePayload: Codable, Equatable {
     public var log: Bool
 
     public init(from rule: PFRule) {
+        id = rule.id
         action = rule.action.rawValue
         direction = rule.direction.rawValue
         networkProtocol = rule.networkProtocol?.rawValue
@@ -124,7 +128,8 @@ public struct PFRulePayload: Codable, Equatable {
 
     public func toPFRule() throws -> PFRule {
         guard let action = PFRule.Action(rawValue: action),
-              let direction = PFRule.Direction(rawValue: direction) else {
+            let direction = PFRule.Direction(rawValue: direction)
+        else {
             throw FirewallXPCPayloadError.invalidRule
         }
 
@@ -157,6 +162,7 @@ public struct PFRulePayload: Codable, Equatable {
         }
 
         let rule = PFRule(
+            id: id ?? UUID(),
             action: action,
             direction: direction,
             networkProtocol: parsedProtocol,
@@ -199,8 +205,9 @@ public struct PFRulePayload: Codable, Equatable {
         case "range":
             let parts = value.split(separator: ":", omittingEmptySubsequences: false)
             guard parts.count == 2,
-                  let start = UInt16(parts[0]),
-                  let end = UInt16(parts[1]) else {
+                let start = UInt16(parts[0]),
+                let end = UInt16(parts[1])
+            else {
                 throw FirewallXPCPayloadError.invalidRule
             }
             return .range(start, end)
@@ -251,5 +258,14 @@ public struct AppRulePayload: Codable, Equatable {
         self.path = path
         self.name = name
         self.allowed = allowed
+    }
+}
+
+public struct PFStatusPayload: Codable {
+    public let enabled: Bool
+    public let policy: PFPolicySnapshot
+    public init(enabled: Bool, policy: PFPolicySnapshot) {
+        self.enabled = enabled
+        self.policy = policy
     }
 }

@@ -1,7 +1,7 @@
 // ContentView - Main window for Rampart
 
-import SwiftUI
 import FirewallKit
+import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject var viewModel: FirewallViewModel
@@ -17,8 +17,20 @@ struct ContentView: View {
                 HelperStatusBanner()
             }
         }
+        .sheet(item: $viewModel.rulePreview) { preview in
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Review Firewall Change").font(.title2)
+                Text(preview.description)
+                Text("The policy will contain \(preview.rules.count) rules after this change.")
+                HStack {
+                    Button("Cancel") { viewModel.rulePreview = nil }
+                    Spacer()
+                    Button("Apply Change", action: viewModel.applyRulePreview).buttonStyle(.borderedProminent)
+                }
+            }.padding(24).frame(minWidth: 460)
+        }
         .alert("Error", isPresented: $viewModel.showError) {
-            Button("OK") { }
+            Button("OK") {}
         } message: {
             Text(viewModel.errorMessage ?? "Unknown error")
         }
@@ -140,11 +152,13 @@ struct DashboardView: View {
                 .padding()
 
                 // Status Cards
-                LazyVGrid(columns: [
-                    GridItem(.flexible()),
-                    GridItem(.flexible()),
-                    GridItem(.flexible())
-                ], spacing: 16) {
+                LazyVGrid(
+                    columns: [
+                        GridItem(.flexible()),
+                        GridItem(.flexible()),
+                        GridItem(.flexible()),
+                    ], spacing: 16
+                ) {
                     StatusCard(
                         title: "Packet Filter",
                         icon: "network.badge.shield.half.filled",

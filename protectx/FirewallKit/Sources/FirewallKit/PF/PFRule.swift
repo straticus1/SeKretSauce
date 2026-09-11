@@ -1,8 +1,8 @@
 // PFRule - Packet filter rule model
 // Represents a single pf rule with parsing and generation
 
-import Foundation
 import Darwin
+import Foundation
 
 public struct PFRule: Identifiable, Equatable {
     public let id: UUID
@@ -193,10 +193,12 @@ extension PFRule {
 
     public func validate() throws {
         if let interface {
-            guard interface.range(
-                of: #"^[A-Za-z0-9][A-Za-z0-9._:-]{0,31}$"#,
-                options: .regularExpression
-            ) != nil else {
+            guard
+                interface.range(
+                    of: #"^[A-Za-z0-9][A-Za-z0-9._:-]{0,31}$"#,
+                    options: .regularExpression
+                ) != nil
+            else {
                 throw PFRuleValidationError.invalidInterface
             }
         }
@@ -221,10 +223,11 @@ extension PFRule {
 
         if let flags {
             guard networkProtocol == .tcp,
-                  flags.range(
+                flags.range(
                     of: #"^[FSRPAUEW]+(?:/[FSRPAUEW]+)?$"#,
                     options: [.regularExpression, .caseInsensitive]
-                  ) != nil else {
+                ) != nil
+            else {
                 throw PFRuleValidationError.invalidFlags
             }
         }
@@ -240,16 +243,19 @@ extension PFRule {
             }
         case .network(let address, let prefix):
             guard address.containsNoControlCharacters,
-                  let family = ipFamily(address),
-                  (family == AF_INET && (0...32).contains(prefix))
-                    || (family == AF_INET6 && (0...128).contains(prefix)) else {
+                let family = ipFamily(address),
+                (family == AF_INET && (0...32).contains(prefix))
+                    || (family == AF_INET6 && (0...128).contains(prefix))
+            else {
                 throw PFRuleValidationError.invalidNetwork
             }
         case .table(let name):
-            guard name.range(
-                of: #"^[A-Za-z_][A-Za-z0-9_-]{0,62}$"#,
-                options: .regularExpression
-            ) != nil else {
+            guard
+                name.range(
+                    of: #"^[A-Za-z_][A-Za-z0-9_-]{0,62}$"#,
+                    options: .regularExpression
+                ) != nil
+            else {
                 throw PFRuleValidationError.invalidTable
             }
         }
@@ -325,12 +331,13 @@ extension PFRule {
         let proto = networkProtocol?.rawValue.uppercased() ?? "ANY"
         let portStr = port?.displayName ?? "*"
 
-        return "\(actionEmoji) \(dirArrow) \(proto) \(source.displayName) → \(destination.displayName):\(portStr)"
+        return
+            "\(actionEmoji) \(dirArrow) \(proto) \(source.displayName) → \(destination.displayName):\(portStr)"
     }
 }
 
-private extension String {
-    var containsNoControlCharacters: Bool {
+extension String {
+    fileprivate var containsNoControlCharacters: Bool {
         !unicodeScalars.contains { CharacterSet.controlCharacters.contains($0) }
     }
 }
@@ -367,115 +374,91 @@ extension PFRule {
 
     /// Parse a pf rule string into a PFRule object
     public static func parse(_ line: String) -> PFRule? {
-        let trimmed = line.trimmingCharacters(in: .whitespaces)
-
-        // Skip comments and empty lines
-        if trimmed.isEmpty || trimmed.hasPrefix("#") {
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !trimmed.hasPrefix("#") else { return nil }
+        let tokens = trimmed.replacingOccurrences(of: "{", with: " { ")
+            .replacingOccurrences(of: "}", with: " } ")
+            .replacingOccurrences(of: ",", with: " , ")
+            .split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        guard let first = tokens.first, let action = Action(rawValue: first) else { return nil }
+        var rule = PFRule(action: action)
+        var index = 1
+        var seen = Set<String>()
+        func next() -> String? {
+            guard index < tokens.count else { return nil }
+            defer { index += 1 }
+            return tokens[index]
+        }
+        while let token = next() {
+            let key = ["in", "out"].contains(token) ? "direction" : token
+            guard seen.insert(key).inserted else { return nil }
+            switch token {
+            case "in": rule.direction = .in
+            case "out": rule.direction = .out
+            case "log": rule.log = true
+            case "on":
+                guard let value = next() else { return nil }
+                rule.interface = value
+            case "proto":
+                guard let value = next(), let proto = NetworkProtocol(rawValue: value) else { return nil }
+                rule.networkProtocol = proto
+            case "from", "to":
+                guard let value = next(), let address = parseAddress(value) else { return nil }
+                if token == "from" { rule.source = address } else { rule.destination = address }
+            case "port":
+                // This model supports destination ports only.
+                guard seen.contains("to"), var value = next() else { return nil }
+                if value == "=" {
+                    guard let following = next() else { return nil }
+                    value = following
+                }
+                if value == "{" {
+                    var ports: [UInt16] = []
+                    guard let first = next(), let port = UInt16(first) else { return nil }
+                    ports.append(port)
+                    while true {
+                        guard let separator = next() else { return nil }
+                        if separator == "}" { break }
+                        guard separator == ",", let raw = next(), let p = UInt16(raw) else { return nil }
+                        ports.append(p)
+                    }
+                    rule.port = .list(ports)
+                } else if value.contains(":") {
+                    let parts = value.split(separator: ":", omittingEmptySubsequences: false)
+                    guard parts.count == 2, let start = UInt16(parts[0]), let end = UInt16(parts[1]) else {
+                        return nil
+                    }
+                    rule.port = .range(start, end)
+                } else {
+                    guard let port = UInt16(value) else { return nil }
+                    rule.port = .single(port)
+                }
+            case "flags":
+                guard let value = next() else { return nil }
+                rule.flags = value
+            case "keep", "modulate", "synproxy":
+                guard !seen.contains("state"), next() == "state" else { return nil }
+                seen.insert("state")
+                rule.state = State(rawValue: "\(token) state")
+            default: return nil  // Never silently turn unsupported syntax into a different rule.
+            }
+        }
+        guard seen.contains("from"), seen.contains("to"), (try? rule.validate()) != nil else {
             return nil
         }
-
-        // Basic parsing - this is simplified, real pf syntax is complex
-        var rule = PFRule(action: .pass)
-
-        let components = trimmed.split(separator: " ").map(String.init)
-        var index = 0
-
-        // Action
-        if index < components.count {
-            if let action = Action(rawValue: components[index]) {
-                rule.action = action
-                index += 1
-            }
-        }
-
-        // Direction
-        while index < components.count {
-            let comp = components[index]
-
-            if comp == "in" {
-                rule.direction = .in
-                index += 1
-            } else if comp == "out" {
-                rule.direction = .out
-                index += 1
-            } else if comp == "log" {
-                rule.log = true
-                index += 1
-            } else if comp == "quick" {
-                index += 1
-            } else if comp == "on" {
-                index += 1
-                if index < components.count {
-                    rule.interface = components[index]
-                    index += 1
-                }
-            } else if comp == "proto" {
-                index += 1
-                if index < components.count {
-                    rule.networkProtocol = NetworkProtocol(rawValue: components[index])
-                    index += 1
-                }
-            } else if comp == "from" {
-                index += 1
-                if index < components.count {
-                    rule.source = parseAddress(components[index])
-                    index += 1
-                }
-            } else if comp == "to" {
-                index += 1
-                if index < components.count {
-                    rule.destination = parseAddress(components[index])
-                    index += 1
-                }
-            } else if comp == "port" {
-                index += 1
-                if index < components.count {
-                    rule.port = parsePort(components[index])
-                    index += 1
-                }
-            } else if comp == "keep" || comp == "modulate" || comp == "synproxy" {
-                // State tracking
-                if index + 1 < components.count && components[index + 1] == "state" {
-                    rule.state = State(rawValue: "\(comp) state")
-                    index += 2
-                } else {
-                    index += 1
-                }
-            } else {
-                index += 1
-            }
-        }
-
         return rule
     }
 
-    private static func parseAddress(_ str: String) -> Address {
-        if str == "any" {
-            return .any
-        } else if str.hasPrefix("<") && str.hasSuffix(">") {
-            let tableName = String(str.dropFirst().dropLast())
-            return .table(tableName)
-        } else if str.contains("/") {
-            let parts = str.split(separator: "/")
-            if parts.count == 2, let prefix = Int(parts[1]) {
-                return .network(String(parts[0]), prefix)
-            }
+    private static func parseAddress(_ value: String) -> Address? {
+        if value == "any" { return .any }
+        if value.hasPrefix("<"), value.hasSuffix(">") {
+            return .table(String(value.dropFirst().dropLast()))
         }
-        return .host(str)
-    }
-
-    private static func parsePort(_ str: String) -> Port {
-        if str.contains(":") {
-            let parts = str.split(separator: ":")
-            if parts.count == 2,
-               let start = UInt16(parts[0]),
-               let end = UInt16(parts[1]) {
-                return .range(start, end)
-            }
+        if value.contains("/") {
+            let parts = value.split(separator: "/", omittingEmptySubsequences: false)
+            guard parts.count == 2, let prefix = Int(parts[1]) else { return nil }
+            return .network(String(parts[0]), prefix)
         }
-        if let port = UInt16(str) {
-            return .single(port)
-        }
-        return .single(0)
+        return .host(value)
     }
 }
