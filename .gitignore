@@ -66,6 +66,7 @@ recordings/
 # Local configuration
 .configured
 local.config
+.omc/
 
 # Installer build artifacts
 *.pkg
