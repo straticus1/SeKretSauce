@@ -5,15 +5,15 @@
     <key>CFBundleDevelopmentRegion</key>
     <string>en</string>
     <key>CFBundleExecutable</key>
-    <string>Rampart</string>
+    <string>ProtectX</string>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
-    <string>com.rampart.Rampart</string>
+    <string>com.afterdark.protectx</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
-    <string>Rampart</string>
+    <string>ProtectX</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
@@ -30,10 +30,5 @@
     <string></string>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
-    <key>SMPrivilegedExecutables</key>
-    <dict>
-        <key>com.rampart.FirewallHelper</key>
-        <string>identifier "com.rampart.FirewallHelper" and anchor apple generic and certificate leaf[subject.OU] = "$(DEVELOPMENT_TEAM)"</string>
-    </dict>
 </dict>
 </plist>

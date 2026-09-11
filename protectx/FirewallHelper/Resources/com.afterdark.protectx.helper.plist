@@ -3,18 +3,16 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.rampart.FirewallHelper</string>
+    <string>com.afterdark.protectx.helper</string>
     <key>BundleIdentifier</key>
-    <string>com.rampart.FirewallHelper</string>
+    <string>com.afterdark.protectx.helper</string>
     <key>MachServices</key>
     <dict>
-        <key>com.rampart.FirewallHelper</key>
+        <key>com.afterdark.protectx.helper</key>
         <true/>
     </dict>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/Library/PrivilegedHelperTools/com.rampart.FirewallHelper</string>
-    </array>
+    <key>BundleProgram</key>
+    <string>Contents/Library/LaunchServices/com.afterdark.protectx.helper</string>
     <key>RunAtLoad</key>
     <false/>
     <key>KeepAlive</key>
@@ -24,7 +22,7 @@
     </dict>
     <key>AssociatedBundleIdentifiers</key>
     <array>
-        <string>com.rampart.Rampart</string>
+        <string>com.afterdark.protectx</string>
     </array>
 </dict>
 </plist>

@@ -12,11 +12,53 @@ struct ContentView: View {
         } detail: {
             DetailView()
         }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if !viewModel.helperState.canPerformPrivilegedOperations {
+                HelperStatusBanner()
+            }
+        }
         .alert("Error", isPresented: $viewModel.showError) {
             Button("OK") { }
         } message: {
             Text(viewModel.errorMessage ?? "Unknown error")
         }
+    }
+}
+
+private struct HelperStatusBanner: View {
+    @EnvironmentObject var viewModel: FirewallViewModel
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "exclamationmark.shield")
+                .foregroundColor(.orange)
+            Text(viewModel.helperState.message)
+                .font(.callout)
+            Spacer()
+
+            switch viewModel.helperState {
+            case .notInstalled:
+                Button("Install Helper") {
+                    viewModel.installHelper()
+                }
+                .buttonStyle(.borderedProminent)
+            case .awaitingApproval:
+                Button("Open System Settings") {
+                    viewModel.openHelperApprovalSettings()
+                }
+                .buttonStyle(.borderedProminent)
+            case .unavailable:
+                Button("Retry") {
+                    viewModel.refresh()
+                }
+            case .available:
+                EmptyView()
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(.bar)
+        .overlay(alignment: .bottom) { Divider() }
     }
 }
 

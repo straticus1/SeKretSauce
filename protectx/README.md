@@ -87,11 +87,17 @@ sudo cp build/adsp /usr/local/bin/
 ```
 
 ### Privileged Helper (for root operations)
-The helper is installed automatically via SMJobBless when the GUI app first runs, or manually:
+
+The signed helper and LaunchDaemon plist are embedded in `ProtectX.app`. Open
+the app, click **Install Helper**, then approve ProtectX in **System Settings →
+General → Login Items**. The GUI registers it with `SMAppService` and performs
+all privileged firewall mutations over an authenticated XPC connection.
+
+LaunchDaemons registered this way require a Developer ID-signed, notarized app.
+Set `CODE_SIGN_IDENTITY` when building a distribution artifact:
+
 ```bash
-sudo cp build/ProtectX.app/Contents/Library/LaunchServices/com.afterdark.protectx.helper /Library/PrivilegedHelperTools/
-sudo cp build/LaunchDaemons/com.afterdark.protectx.helper.plist /Library/LaunchDaemons/
-sudo launchctl load /Library/LaunchDaemons/com.afterdark.protectx.helper.plist
+CODE_SIGN_IDENTITY="Developer ID Application: Your Company (TEAMID)" ./build.sh
 ```
 
 ## Requirements

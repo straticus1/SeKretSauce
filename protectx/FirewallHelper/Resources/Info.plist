@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleIdentifier</key>
-    <string>com.rampart.FirewallHelper</string>
+    <string>com.afterdark.protectx.helper</string>
     <key>CFBundleName</key>
     <string>FirewallHelper</string>
     <key>CFBundleVersion</key>
@@ -14,7 +14,7 @@
     <string>6.0</string>
     <key>SMAuthorizedClients</key>
     <array>
-        <string>identifier "com.rampart.Rampart" and anchor apple generic and certificate leaf[subject.OU] = "$(DEVELOPMENT_TEAM)"</string>
+        <string>identifier "com.afterdark.protectx" and anchor apple generic and certificate leaf[subject.OU] = "$(DEVELOPMENT_TEAM)"</string>
     </array>
 </dict>
 </plist>

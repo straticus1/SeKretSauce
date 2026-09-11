@@ -28,11 +28,15 @@ final class FirewallViewModel: ObservableObject {
     @Published var isLoading: Bool = false
     @Published var errorMessage: String?
     @Published var showError: Bool = false
+    @Published var helperState: FirewallHelperState = .notInstalled
 
     // MARK: - Managers
 
-    private let kit = FirewallKit()
+    private let helper = FirewallHelperClient()
+    private let helperService = FirewallHelperService()
+    private let netState = NetStateMonitor()
     private var refreshTimer: Timer?
+    private var refreshInProgress = false
 
     // MARK: - Init
 
@@ -70,20 +74,39 @@ final class FirewallViewModel: ObservableObject {
     // MARK: - Refresh
 
     func refresh() {
-        kit.pf.refresh()
-        kit.appFirewall.refresh()
-        kit.netState.refresh()
+        guard !refreshInProgress else { return }
+        refreshInProgress = true
+        Task {
+            defer { refreshInProgress = false }
+            netState.refresh()
+            connections = netState.connections
+            listeners = netState.listeners
 
-        pfEnabled = kit.pf.isEnabled
-        pfRules = kit.pf.rules
+            let serviceState = helperService.state
+            guard case .unavailable = serviceState else {
+                helperState = serviceState
+                return
+            }
 
-        appFirewallEnabled = kit.appFirewall.isEnabled
-        stealthMode = kit.appFirewall.stealthMode
-        blockAll = kit.appFirewall.blockAll
-        appRules = kit.appFirewall.apps
+            do {
+                let version = try await helper.ping()
+                async let pf = helper.pfStatus()
+                async let app = helper.appFirewallStatus()
+                let (pfStatus, appStatus) = try await (pf, app)
 
-        connections = kit.netState.connections
-        listeners = kit.netState.listeners
+                helperState = .available(version: version)
+                pfEnabled = pfStatus.enabled
+                pfRules = pfStatus.rules
+                appFirewallEnabled = appStatus.enabled
+                stealthMode = appStatus.stealthMode
+                blockAll = appStatus.blockAll
+                appRules = appStatus.apps.map {
+                    AppFirewallRule(path: $0.path, name: $0.name, allowed: $0.allowed)
+                }
+            } catch {
+                helperState = .unavailable
+            }
+        }
     }
 
     private func startAutoRefresh() {
@@ -97,20 +120,8 @@ final class FirewallViewModel: ObservableObject {
     // MARK: - PF Actions
 
     func togglePF() {
-        Task {
-            isLoading = true
-            defer { isLoading = false }
-
-            do {
-                if pfEnabled {
-                    try kit.pf.disable()
-                } else {
-                    try kit.pf.enable()
-                }
-                refresh()
-            } catch {
-                showError(error)
-            }
+        performPrivileged {
+            try await self.helper.setPFEnabled(!self.pfEnabled)
         }
     }
 
@@ -120,7 +131,8 @@ final class FirewallViewModel: ObservableObject {
             defer { isLoading = false }
 
             do {
-                try kit.pf.reload()
+                try requireHelper()
+                try await helper.reloadPF()
                 refresh()
             } catch {
                 showError(error)
@@ -134,7 +146,8 @@ final class FirewallViewModel: ObservableObject {
             defer { isLoading = false }
 
             do {
-                try kit.pf.addRule(rule)
+                try requireHelper()
+                try await helper.addPFRule(rule)
                 refresh()
             } catch {
                 showError(error)
@@ -148,7 +161,8 @@ final class FirewallViewModel: ObservableObject {
             defer { isLoading = false }
 
             do {
-                try kit.pf.removeRule(at: index)
+                try requireHelper()
+                try await helper.removePFRule(at: index)
                 refresh()
             } catch {
                 showError(error)
@@ -159,48 +173,20 @@ final class FirewallViewModel: ObservableObject {
     // MARK: - App Firewall Actions
 
     func toggleAppFirewall() {
-        Task {
-            isLoading = true
-            defer { isLoading = false }
-
-            do {
-                if appFirewallEnabled {
-                    try kit.appFirewall.disable()
-                } else {
-                    try kit.appFirewall.enable()
-                }
-                refresh()
-            } catch {
-                showError(error)
-            }
+        performPrivileged {
+            try await self.helper.setAppFirewallEnabled(!self.appFirewallEnabled)
         }
     }
 
     func toggleStealthMode() {
-        Task {
-            isLoading = true
-            defer { isLoading = false }
-
-            do {
-                try kit.appFirewall.setStealthMode(!stealthMode)
-                refresh()
-            } catch {
-                showError(error)
-            }
+        performPrivileged {
+            try await self.helper.setStealthMode(!self.stealthMode)
         }
     }
 
     func toggleBlockAll() {
-        Task {
-            isLoading = true
-            defer { isLoading = false }
-
-            do {
-                try kit.appFirewall.setBlockAll(!blockAll)
-                refresh()
-            } catch {
-                showError(error)
-            }
+        performPrivileged {
+            try await self.helper.setBlockAll(!self.blockAll)
         }
     }
 
@@ -210,7 +196,8 @@ final class FirewallViewModel: ObservableObject {
             defer { isLoading = false }
 
             do {
-                try kit.appFirewall.allowApp(at: path)
+                try requireHelper()
+                try await helper.allowApp(at: path)
                 refresh()
             } catch {
                 showError(error)
@@ -224,7 +211,8 @@ final class FirewallViewModel: ObservableObject {
             defer { isLoading = false }
 
             do {
-                try kit.appFirewall.blockApp(at: path)
+                try requireHelper()
+                try await helper.blockApp(at: path)
                 refresh()
             } catch {
                 showError(error)
@@ -238,7 +226,8 @@ final class FirewallViewModel: ObservableObject {
             defer { isLoading = false }
 
             do {
-                try kit.appFirewall.removeRule(for: path)
+                try requireHelper()
+                try await helper.removeApp(at: path)
                 refresh()
             } catch {
                 showError(error)
@@ -254,7 +243,8 @@ final class FirewallViewModel: ObservableObject {
             defer { isLoading = false }
 
             do {
-                try kit.blockIP(ip)
+                try requireHelper()
+                try await helper.addPFRule(.block(from: ip))
                 refresh()
             } catch {
                 showError(error)
@@ -263,6 +253,52 @@ final class FirewallViewModel: ObservableObject {
     }
 
     // MARK: - Error Handling
+
+    func installHelper() {
+        do {
+            try helperService.register()
+            helperState = helperService.state
+            refresh()
+        } catch {
+            showError(error)
+        }
+    }
+
+    func openHelperApprovalSettings() {
+        guard let url = URL(
+            string: "x-apple.systempreferences:com.apple.LoginItems-Settings.extension"
+        ) else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    private func performPrivileged(
+        _ operation: @escaping @MainActor () async throws -> Void
+    ) {
+        Task {
+            isLoading = true
+            defer { isLoading = false }
+            do {
+                try requireHelper()
+                try await operation()
+                refresh()
+            } catch {
+                showError(error)
+            }
+        }
+    }
+
+    private func requireHelper() throws {
+        switch helperState {
+        case .available:
+            return
+        case .notInstalled:
+            throw FirewallHelperClientError.registrationRequired
+        case .awaitingApproval:
+            throw FirewallHelperClientError.approvalRequired
+        case .unavailable:
+            throw FirewallHelperClientError.unavailable
+        }
+    }
 
     private func showError(_ error: Error) {
         errorMessage = error.localizedDescription

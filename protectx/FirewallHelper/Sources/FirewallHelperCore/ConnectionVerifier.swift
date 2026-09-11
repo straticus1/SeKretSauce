@@ -39,7 +39,6 @@ public final class ConnectionVerifier {
 
     public init(
         allowedBundleIdentifiers: Set<String> = [
-            "com.rampart.Rampart",
             "com.afterdark.protectx"
         ]
     ) {

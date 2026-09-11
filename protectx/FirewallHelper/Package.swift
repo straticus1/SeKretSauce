@@ -8,7 +8,7 @@ let package = Package(
     ],
     products: [
         .executable(
-            name: "com.rampart.FirewallHelper",
+            name: "com.afterdark.protectx.helper",
             targets: ["FirewallHelper"]
         ),
         .library(
