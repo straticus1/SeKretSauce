@@ -21,7 +21,7 @@ a short feature pass.
 
 This is **one Git repository organized as a monorepo**.
 
-- Git root: `/Users/ryan/development/afterdark-secretsauce`
+- Git root: the `afterdark-secretsauce` checkout
 - Remote: `https://github.com/straticus1/SeKretSauce.git`
 - Git submodules: none
 - Tracked Swift and Go code: approximately 19,000 lines
