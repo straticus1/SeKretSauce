@@ -218,7 +218,7 @@ Internal use only - After Dark Systems, LLC
 
 ## License
 
-Proprietary - All rights reserved.
+MIT. See [LICENSE](../LICENSE).
 
 ## Support
 

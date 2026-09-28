@@ -159,7 +159,7 @@ protectx/             firewall library, GUI, CLI, and privileged helper
 
 ## License
 
-Proprietary — all rights reserved.
+MIT. See [LICENSE](LICENSE).
 
 ## Roadmap implementation notes
 
