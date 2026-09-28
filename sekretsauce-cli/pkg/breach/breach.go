@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/afterdarktech/sekretsauce/pkg/keychain"
+	"github.com/straticus1/SeKretSauce/sekretsauce-cli/pkg/keychain"
 )
 
 // ScanResult contains breach detection results

@@ -10,19 +10,19 @@
 
 class Sekretsauce < Formula
   desc "Security Swiss Army Knife for macOS - scan for secrets, wallets, suspicious processes"
-  homepage "https://github.com/afterdarktech/sekretsauce"
+  homepage "https://github.com/straticus1/SeKretSauce"
   license :cannot_represent
 
   # A stable stanza must not be published until release archives and their
   # real SHA-256 digests exist. Install this source formula with --HEAD.
-  head "https://github.com/afterdarktech/sekretsauce.git", branch: "main"
+  head "https://github.com/straticus1/SeKretSauce.git", branch: "main"
 
   depends_on "go" => :build
   depends_on :macos
 
   def install
     cd "sekretsauce-cli" do
-      system "go", "build", *std_go_args(ldflags: "-s -w -X github.com/afterdarktech/sekretsauce/cmd/sekretsauce/cmd.Version=#{version}"), "./cmd/sekretsauce"
+      system "go", "build", *std_go_args(ldflags: "-s -w -X github.com/straticus1/SeKretSauce/sekretsauce-cli/cmd/sekretsauce/cmd.Version=#{version}"), "./cmd/sekretsauce"
     end
 
     # Generate shell completions
@@ -48,7 +48,7 @@ class Sekretsauce < Formula
         sekretsauce --help
 
       GUI app available separately (not included in Homebrew):
-        https://github.com/afterdarktech/sekretsauce/releases
+        https://github.com/straticus1/SeKretSauce/releases
     EOS
   end
 

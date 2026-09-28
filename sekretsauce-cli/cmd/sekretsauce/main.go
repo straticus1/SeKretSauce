@@ -4,7 +4,7 @@ import (
 	"errors"
 	"os"
 
-	"github.com/afterdarktech/sekretsauce/cmd/sekretsauce/cmd"
+	"github.com/straticus1/SeKretSauce/sekretsauce-cli/cmd/sekretsauce/cmd"
 )
 
 func main() {

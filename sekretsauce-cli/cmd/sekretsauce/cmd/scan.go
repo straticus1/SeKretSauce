@@ -8,15 +8,15 @@ import (
 	"os"
 	"time"
 
-	"github.com/afterdarktech/sekretsauce/pkg/breach"
-	"github.com/afterdarktech/sekretsauce/pkg/ca"
-	"github.com/afterdarktech/sekretsauce/pkg/certs"
-	"github.com/afterdarktech/sekretsauce/pkg/hunter"
-	"github.com/afterdarktech/sekretsauce/pkg/inspector"
-	"github.com/afterdarktech/sekretsauce/pkg/keychain"
-	"github.com/afterdarktech/sekretsauce/pkg/secrets"
-	"github.com/afterdarktech/sekretsauce/pkg/wallet"
 	"github.com/spf13/cobra"
+	"github.com/straticus1/SeKretSauce/sekretsauce-cli/pkg/breach"
+	"github.com/straticus1/SeKretSauce/sekretsauce-cli/pkg/ca"
+	"github.com/straticus1/SeKretSauce/sekretsauce-cli/pkg/certs"
+	"github.com/straticus1/SeKretSauce/sekretsauce-cli/pkg/hunter"
+	"github.com/straticus1/SeKretSauce/sekretsauce-cli/pkg/inspector"
+	"github.com/straticus1/SeKretSauce/sekretsauce-cli/pkg/keychain"
+	"github.com/straticus1/SeKretSauce/sekretsauce-cli/pkg/secrets"
+	"github.com/straticus1/SeKretSauce/sekretsauce-cli/pkg/wallet"
 )
 
 var scanProfile = "full"

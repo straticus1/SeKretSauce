@@ -3,9 +3,9 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
-	"github.com/afterdarktech/sekretsauce/pkg/hunter"
-	"github.com/afterdarktech/sekretsauce/pkg/inspector"
-	"github.com/afterdarktech/sekretsauce/pkg/keychain"
+	"github.com/straticus1/SeKretSauce/sekretsauce-cli/pkg/hunter"
+	"github.com/straticus1/SeKretSauce/sekretsauce-cli/pkg/inspector"
+	"github.com/straticus1/SeKretSauce/sekretsauce-cli/pkg/keychain"
 	"os"
 	"strings"
 	"testing"

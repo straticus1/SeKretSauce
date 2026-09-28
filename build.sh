@@ -36,7 +36,7 @@ build_cli() {
     echo "🔨 Building SeKretSauce CLI..."
     mkdir -p bin
     cd sekretsauce-cli
-    go build -ldflags "-X github.com/afterdarktech/sekretsauce/cmd/sekretsauce/cmd.Version=${VERSION}" -o ../bin/sekretsauce ./cmd/sekretsauce
+    go build -ldflags "-X github.com/straticus1/SeKretSauce/sekretsauce-cli/cmd/sekretsauce/cmd.Version=${VERSION}" -o ../bin/sekretsauce ./cmd/sekretsauce
     cd ..
     echo "✅ CLI built: ./bin/sekretsauce"
 }
@@ -47,11 +47,11 @@ build_cli_all() {
 
     echo "  Building for darwin/amd64..."
     cd sekretsauce-cli
-    GOOS=darwin GOARCH=amd64 go build -ldflags "-X github.com/afterdarktech/sekretsauce/cmd/sekretsauce/cmd.Version=${VERSION}" \
+    GOOS=darwin GOARCH=amd64 go build -ldflags "-X github.com/straticus1/SeKretSauce/sekretsauce-cli/cmd/sekretsauce/cmd.Version=${VERSION}" \
         -o ../${BUILD_DIR}/sekretsauce-darwin-amd64 ./cmd/sekretsauce
 
     echo "  Building for darwin/arm64..."
-    GOOS=darwin GOARCH=arm64 go build -ldflags "-X github.com/afterdarktech/sekretsauce/cmd/sekretsauce/cmd.Version=${VERSION}" \
+    GOOS=darwin GOARCH=arm64 go build -ldflags "-X github.com/straticus1/SeKretSauce/sekretsauce-cli/cmd/sekretsauce/cmd.Version=${VERSION}" \
         -o ../${BUILD_DIR}/sekretsauce-darwin-arm64 ./cmd/sekretsauce
     cd ..
 

@@ -3,8 +3,8 @@ package cmd
 import (
 	"fmt"
 
-	"github.com/afterdarktech/sekretsauce/pkg/browser"
 	"github.com/spf13/cobra"
+	"github.com/straticus1/SeKretSauce/sekretsauce-cli/pkg/browser"
 )
 
 var exportCmd = &cobra.Command{

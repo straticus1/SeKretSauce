@@ -15,7 +15,7 @@ all: build
 build:
 	@echo "Building SeKretSauce CLI..."
 	@mkdir -p bin
-	@cd sekretsauce-cli && go build -ldflags "-X github.com/afterdarktech/sekretsauce/cmd/sekretsauce/cmd.Version=$(VERSION)" -o ../bin/$(CLI_NAME) ./cmd/sekretsauce
+	@cd sekretsauce-cli && go build -ldflags "-X github.com/straticus1/SeKretSauce/sekretsauce-cli/cmd/sekretsauce/cmd.Version=$(VERSION)" -o ../bin/$(CLI_NAME) ./cmd/sekretsauce
 	@echo "Build complete: ./bin/$(CLI_NAME)"
 
 install: build
@@ -72,8 +72,8 @@ homebrew:
 release-all: clean
 	@echo "Building for all architectures..."
 	@mkdir -p $(BUILD_DIR)
-	@cd sekretsauce-cli && GOOS=darwin GOARCH=amd64 go build -ldflags "-X github.com/afterdarktech/sekretsauce/cmd/sekretsauce/cmd.Version=$(VERSION)" -o ../$(BUILD_DIR)/$(CLI_NAME)-darwin-amd64 ./cmd/sekretsauce
-	@cd sekretsauce-cli && GOOS=darwin GOARCH=arm64 go build -ldflags "-X github.com/afterdarktech/sekretsauce/cmd/sekretsauce/cmd.Version=$(VERSION)" -o ../$(BUILD_DIR)/$(CLI_NAME)-darwin-arm64 ./cmd/sekretsauce
+	@cd sekretsauce-cli && GOOS=darwin GOARCH=amd64 go build -ldflags "-X github.com/straticus1/SeKretSauce/sekretsauce-cli/cmd/sekretsauce/cmd.Version=$(VERSION)" -o ../$(BUILD_DIR)/$(CLI_NAME)-darwin-amd64 ./cmd/sekretsauce
+	@cd sekretsauce-cli && GOOS=darwin GOARCH=arm64 go build -ldflags "-X github.com/straticus1/SeKretSauce/sekretsauce-cli/cmd/sekretsauce/cmd.Version=$(VERSION)" -o ../$(BUILD_DIR)/$(CLI_NAME)-darwin-arm64 ./cmd/sekretsauce
 	@echo "Built: $(BUILD_DIR)/$(CLI_NAME)-darwin-amd64"
 	@echo "Built: $(BUILD_DIR)/$(CLI_NAME)-darwin-arm64"
 

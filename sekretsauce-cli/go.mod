@@ -1,4 +1,4 @@
-module github.com/afterdarktech/sekretsauce
+module github.com/straticus1/SeKretSauce/sekretsauce-cli
 
 go 1.25.2
 
